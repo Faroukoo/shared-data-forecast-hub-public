@@ -113,6 +113,21 @@ void test("consumer payload is strict, public and deterministically ordered", ()
   );
 });
 
+void test("consumer observation order is independent of the host locale", () => {
+  const parsed = ConsumerPayloadSchema.parse({
+    ...validPayload(),
+    observations: [
+      observation("hcp.ipc2017.z", "ma"),
+      observation("hcp.ipc2017.é", "ma"),
+    ],
+  });
+
+  assert.deepEqual(
+    parsed.observations.map((row) => row.series_key),
+    ["hcp.ipc2017.z", "hcp.ipc2017.é"],
+  );
+});
+
 void test("consumer payload rejects duplicate observation keys and sources", () => {
   const payload = validPayload();
   assert.throws(

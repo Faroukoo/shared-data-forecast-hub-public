@@ -26,14 +26,18 @@ function isSortedUnique(values: string[]): boolean {
   );
 }
 
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function compareObservations(
   left: ConsumerObservation,
   right: ConsumerObservation,
 ): number {
   return (
-    left.series_key.localeCompare(right.series_key) ||
-    left.location_key.localeCompare(right.location_key) ||
-    left.period_start.localeCompare(right.period_start) ||
+    compareCodeUnits(left.series_key, right.series_key) ||
+    compareCodeUnits(left.location_key, right.location_key) ||
+    compareCodeUnits(left.period_start, right.period_start) ||
     left.revision_number - right.revision_number
   );
 }
