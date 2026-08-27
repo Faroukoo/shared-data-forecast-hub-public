@@ -1,0 +1,16 @@
+{
+  "name": "@data-hub/ingest-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@data-hub/contracts": "0.1.0",
+    "@data-hub/source-registry": "0.1.0",
+    "@data-hub/connectors": "0.1.0",
+    "@data-hub/artifact-store": "0.1.0",
+    "@data-hub/parsers": "0.1.0",
+    "@data-hub/quality": "0.1.0",
+    "@data-hub/canonical": "0.1.0"
+  }
+}

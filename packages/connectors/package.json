@@ -1,0 +1,8 @@
+{
+  "name": "@data-hub/connectors",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": { "@data-hub/contracts": "0.1.0" }
+}

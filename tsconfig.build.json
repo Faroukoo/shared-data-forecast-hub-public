@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["apps/ingest-cli/src/**/*.ts", "packages/**/*.ts"]
+}

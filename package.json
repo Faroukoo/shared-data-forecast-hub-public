@@ -1,0 +1,33 @@
+{
+  "name": "shared-data-forecast-hub",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=22.22.0 <23" },
+  "packageManager": "npm@11.15.0",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsup --config tsup.config.ts",
+    "ingest": "tsx apps/ingest-cli/src/index.ts ingest",
+    "smoke:ckan": "tsx apps/ingest-cli/src/index.ts smoke"
+  },
+  "dependencies": {
+    "decimal.js": "10.6.0",
+    "exceljs": "4.4.0",
+    "unzipper": "0.12.5",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "22.20.1",
+    "@types/unzipper": "0.10.11",
+    "eslint": "9.39.5",
+    "tsx": "4.23.12",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.68.0"
+  }
+}

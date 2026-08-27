@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@data-hub/contracts": ["packages/contracts/src/index.ts"],
+      "@data-hub/source-registry": ["packages/source-registry/src/index.ts"],
+      "@data-hub/connectors": ["packages/connectors/src/index.ts"],
+      "@data-hub/artifact-store": ["packages/artifact-store/src/index.ts"],
+      "@data-hub/parsers": ["packages/parsers/src/index.ts"],
+      "@data-hub/quality": ["packages/quality/src/index.ts"],
+      "@data-hub/canonical": ["packages/canonical/src/index.ts"]
+    }
+  },
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "tests/**/*.ts", "*.ts", "*.mjs"]
+}
