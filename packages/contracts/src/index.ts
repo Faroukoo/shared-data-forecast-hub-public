@@ -46,3 +46,15 @@ export {
   type SnapshotIndex,
   type SnapshotManifest,
 } from "./production.js";
+export {
+  CONSUMER_CONTRACT,
+  CONSUMER_PROFILE,
+  ConsumerIndexSchema,
+  ConsumerObservationSchema,
+  ConsumerPayloadSchema,
+  ConsumerSourceSchema,
+  type ConsumerIndex,
+  type ConsumerObservation,
+  type ConsumerPayload,
+  type ConsumerSource,
+} from "./consumer.js";

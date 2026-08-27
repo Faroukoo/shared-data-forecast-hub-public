@@ -21,7 +21,8 @@
       "@data-hub/parsers": ["packages/parsers/src/index.ts"],
       "@data-hub/quality": ["packages/quality/src/index.ts"],
       "@data-hub/canonical": ["packages/canonical/src/index.ts"],
-      "@data-hub/snapshot": ["packages/snapshot/src/index.ts"]
+      "@data-hub/snapshot": ["packages/snapshot/src/index.ts"],
+      "@data-hub/adapters": ["packages/adapters/src/index.ts"]
     }
   },
   "include": ["apps/**/*.ts", "packages/**/*.ts", "tests/**/*.ts", "*.ts", "*.mjs"]

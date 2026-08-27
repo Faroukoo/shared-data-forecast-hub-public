@@ -1,0 +1,458 @@
+name: Verified ERP-Snack consumer release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_release_tag:
+        description: Exact stable data release tag to consume
+        type: string
+        required: true
+      mode:
+        description: Verify only or publish an immutable candidate
+        type: choice
+        options: [verify, publish-prerelease]
+        default: verify
+        required: true
+  workflow_run:
+    workflows: ["Verified public data refresh"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-hub-consumer-publication
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      ${{ github.event.repository.visibility == 'public' &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.mode == 'verify' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted repository code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.3
+      - name: Install and build
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Restore source and verify deterministic consumer bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RELEASE_TAG: ${{ inputs.source_release_tag }}
+          CODE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source_root="$RUNNER_TEMP/consumer-source"
+          restored_data="$RUNNER_TEMP/consumer-restored-data"
+          bundle_dir="$RUNNER_TEMP/consumer-bundle"
+          mkdir -p "$source_root"
+          test ! -e "$restored_data"
+          test ! -e "$bundle_dir"
+
+          gh api "/repos/$GITHUB_REPOSITORY/releases/tags/$SOURCE_RELEASE_TAG" > "$source_root/release.json"
+          node --input-type=module - "$source_root/release.json" "$SOURCE_RELEASE_TAG" "$source_root/source-assets.json" <<'NODE'
+          import fs from "node:fs";
+          const [releasePath, requestedTag, outputPath] = process.argv.slice(2);
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          const sourceTagPattern = /^data-\d{8}T\d{6}Z-[a-f0-9]{12}$/;
+          if (!sourceTagPattern.test(requestedTag) || release.tag_name !== requestedTag || release.name !== requestedTag) process.exit(4);
+          if (release.draft !== false || release.prerelease !== false || release.assets.length !== 3) process.exit(4);
+          const indexes = release.assets.filter((asset) => asset.name === "snapshot-index.json");
+          if (indexes.length !== 1 || !Number.isSafeInteger(indexes[0].id) || !/^sha256:[a-f0-9]{64}$/.test(indexes[0].digest ?? "")) process.exit(4);
+          fs.writeFileSync(outputPath, `${JSON.stringify({ index_id: indexes[0].id })}\n`);
+          NODE
+          index_id="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.index_id))' "$source_root/source-assets.json")"
+          gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$index_id" > "$source_root/snapshot-index.json"
+
+          node --input-type=module - "$source_root/release.json" "$source_root/snapshot-index.json" "$SOURCE_RELEASE_TAG" "$source_root/source-assets.json" <<'NODE'
+          import fs from "node:fs";
+          const [releasePath, indexPath, requestedTag, outputPath] = process.argv.slice(2);
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+          if (!/^[a-f0-9]{64}$/.test(index.snapshot_id ?? "") || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(index.created_at ?? "")) process.exit(4);
+          if (requestedTag.slice(-12) !== index.snapshot_id.slice(0, 12)) process.exit(4);
+          if (!/^data-hub-[a-f0-9]{64}\.tar\.gz$/.test(index.archive?.name ?? "")) process.exit(4);
+          const names = ["snapshot-index.json", index.archive.name, `${index.archive.name}.sha256`];
+          if (release.assets.length !== 3 || names.some((name) => release.assets.filter((asset) => asset.name === name).length !== 1)) process.exit(4);
+          const assets = Object.fromEntries(names.map((name) => {
+            const asset = release.assets.find((item) => item.name === name);
+            if (!Number.isSafeInteger(asset.id) || !/^sha256:[a-f0-9]{64}$/.test(asset.digest ?? "")) process.exit(4);
+            return [name, { id: asset.id, digest: asset.digest }];
+          }));
+          fs.writeFileSync(outputPath, `${JSON.stringify({ archive_name: index.archive.name, assets })}\n`);
+          NODE
+          archive_name="$(node -e 'const value=require(process.argv[1]); process.stdout.write(value.archive_name)' "$source_root/source-assets.json")"
+          archive_id="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.assets[value.archive_name].id))' "$source_root/source-assets.json")"
+          checksum_id="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.assets[value.archive_name + ".sha256"].id))' "$source_root/source-assets.json")"
+          gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$archive_id" > "$source_root/$archive_name"
+          gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$checksum_id" > "$source_root/$archive_name.sha256"
+          node --input-type=module - "$source_root/source-assets.json" "$source_root" <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const [metadataPath, directory] = process.argv.slice(2);
+          const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+          for (const [name, asset] of Object.entries(metadata.assets)) {
+            const digest = crypto.createHash("sha256").update(fs.readFileSync(path.join(directory, name))).digest("hex");
+            if (asset.digest !== `sha256:${digest}`) throw new Error("source_asset_digest_mismatch");
+          }
+          NODE
+
+          npm run snapshot -- restore \
+            --archive "$source_root/$archive_name" \
+            --checksum "$source_root/$archive_name.sha256" \
+            --index "$source_root/snapshot-index.json" \
+            --target-data-dir "$restored_data"
+          npm run snapshot -- verify-state --data-dir "$restored_data"
+          npm run consumer -- create \
+            --data-dir "$restored_data" \
+            --snapshot-index "$source_root/snapshot-index.json" \
+            --source-tag "$SOURCE_RELEASE_TAG" \
+            --output-dir "$bundle_dir" \
+            --code-sha "$CODE_SHA"
+          npm run consumer -- verify \
+            --index "$bundle_dir/consumer-index.json" \
+            --payload "$bundle_dir/consumer-v1.json" \
+            --checksum "$bundle_dir/consumer-v1.json.sha256"
+          node --input-type=module - "$bundle_dir" <<'NODE'
+          import fs from "node:fs";
+          const actual = fs.readdirSync(process.argv[2]).sort();
+          const expected = ["consumer-index.json", "consumer-v1.json", "consumer-v1.json.sha256"];
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("unexpected_consumer_assets");
+          NODE
+
+          mapfile -t identity < <(node --input-type=module - "$bundle_dir/consumer-index.json" <<'NODE'
+          import fs from "node:fs";
+          const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const timestamp = index.created_at.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+          if (!/^[a-f0-9]{64}$/.test(index.payload?.sha256 ?? "")) process.exit(4);
+          console.log(index.payload.sha256);
+          console.log(`consumer-v1-${timestamp}-${index.payload.sha256.slice(0, 12)}`);
+          NODE
+          )
+          payload_sha="${identity[0]}"
+          consumer_tag="${identity[1]}"
+          gh api --paginate --slurp "/repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$source_root/consumer-releases.json"
+          existing_release_id="$(node --input-type=module - "$source_root/consumer-releases.json" "$consumer_tag" <<'NODE'
+          import fs from "node:fs";
+          const [releasesPath, expectedTag] = process.argv.slice(2);
+          const pages = JSON.parse(fs.readFileSync(releasesPath, "utf8"));
+          const releases = Array.isArray(pages[0]) ? pages.flat() : pages;
+          const consumerTagPattern = /^consumer-v1-\d{8}T\d{6}Z-[a-f0-9]{12}$/;
+          const matches = releases.filter((release) => consumerTagPattern.test(release.tag_name) && release.name === release.tag_name && release.tag_name === expectedTag);
+          if (matches.length > 1 || (matches.length === 1 && !Number.isSafeInteger(matches[0].id))) process.exit(4);
+          process.stdout.write(matches.length === 1 ? String(matches[0].id) : "none");
+          NODE
+          )"
+          if [ "$existing_release_id" != "none" ]; then
+            gh api "/repos/$GITHUB_REPOSITORY/releases/$existing_release_id" > "$source_root/existing-consumer.json"
+            existing_state="$(node --input-type=module - "$source_root/existing-consumer.json" "$payload_sha" <<'NODE'
+          import fs from "node:fs";
+          const [releasePath, payloadSha] = process.argv.slice(2);
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          const names = ["consumer-index.json", "consumer-v1.json", "consumer-v1.json.sha256"];
+          if (release.draft !== false || release.assets.length !== 3 || names.some((name) => release.assets.filter((asset) => asset.name === name).length !== 1)) process.exit(4);
+          const index = release.assets.find((asset) => asset.name === "consumer-index.json");
+          if (!index || !Number.isSafeInteger(index.id)) process.exit(4);
+          process.stdout.write(release.prerelease === true ? `candidate:${index.id}` : `stable:${index.id}`);
+          NODE
+            )"
+            index_asset_id="${existing_state#*:}"
+            gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$index_asset_id" > "$source_root/existing-consumer-index.json"
+            node --input-type=module - "$source_root/existing-consumer-index.json" "$payload_sha" <<'NODE'
+          import fs from "node:fs";
+          const [indexPath, payloadSha] = process.argv.slice(2);
+          const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+          if (index.payload?.sha256 !== payloadSha) throw new Error("consumer_tag_collision");
+          NODE
+            if [[ "$existing_state" == stable:* ]]; then
+              echo "existing stable release: no_change"
+            else
+              echo "existing candidate in manual mode: no_change"
+            fi
+          else
+            echo "verified: no release write requested"
+          fi
+
+  publish:
+    if: >-
+      ${{ github.event.repository.visibility == 'public' &&
+          ((github.event_name == 'workflow_dispatch' &&
+            inputs.mode == 'publish-prerelease' &&
+            github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+           (github.event_name == 'workflow_run' &&
+            github.event.workflow_run.conclusion == 'success' &&
+            (github.event.workflow_run.event == 'schedule' ||
+             github.event.workflow_run.event == 'workflow_dispatch') &&
+            github.event.workflow_run.head_repository.full_name == github.repository &&
+            github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+            vars.DATA_HUB_CONSUMER_PRODUCTION_ENABLED == 'true')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout trusted repository code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.3
+      - name: Install and build
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Restore, verify and publish immutable consumer release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_SOURCE_TAG: ${{ inputs.source_release_tag }}
+          MANUAL_CODE_SHA: ${{ github.sha }}
+          AUTOMATIC_CODE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          work_root="$RUNNER_TEMP/consumer-publication"
+          source_root="$work_root/source"
+          restored_data="$work_root/restored-data"
+          bundle_dir="$work_root/bundle"
+          mkdir -p "$source_root"
+          test ! -e "$restored_data"
+          test ! -e "$bundle_dir"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            operation="manual"
+            source_tag="$REQUESTED_SOURCE_TAG"
+            code_sha="$MANUAL_CODE_SHA"
+          else
+            operation="automatic"
+            code_sha="$AUTOMATIC_CODE_SHA"
+            gh api --paginate --slurp "/repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$work_root/releases.json"
+            source_tag="$(node --input-type=module - "$work_root/releases.json" <<'NODE'
+          import fs from "node:fs";
+          const pages = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const releases = Array.isArray(pages[0]) ? pages.flat() : pages;
+          const sourceTagPattern = /^data-\d{8}T\d{6}Z-[a-f0-9]{12}$/;
+          const candidates = releases
+            .filter((release) => release.draft === false && release.prerelease === false && sourceTagPattern.test(release.tag_name) && release.name === release.tag_name)
+            .filter((release) => Number.isFinite(Date.parse(release.published_at)))
+            .sort((left, right) => Date.parse(right.published_at) - Date.parse(left.published_at));
+          if (candidates.length === 0) process.exit(4);
+          process.stdout.write(candidates[0].tag_name);
+          NODE
+            )"
+          fi
+
+          gh api "/repos/$GITHUB_REPOSITORY/releases/tags/$source_tag" > "$source_root/release.json"
+          node --input-type=module - "$source_root/release.json" "$source_tag" "$source_root/source-assets.json" <<'NODE'
+          import fs from "node:fs";
+          const [releasePath, requestedTag, outputPath] = process.argv.slice(2);
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          const sourceTagPattern = /^data-\d{8}T\d{6}Z-[a-f0-9]{12}$/;
+          if (!sourceTagPattern.test(requestedTag) || release.tag_name !== requestedTag || release.name !== requestedTag) process.exit(4);
+          if (release.draft !== false || release.prerelease !== false || release.assets.length !== 3) process.exit(4);
+          const indexes = release.assets.filter((asset) => asset.name === "snapshot-index.json");
+          if (indexes.length !== 1 || !Number.isSafeInteger(indexes[0].id) || !/^sha256:[a-f0-9]{64}$/.test(indexes[0].digest ?? "")) process.exit(4);
+          fs.writeFileSync(outputPath, `${JSON.stringify({ index_id: indexes[0].id })}\n`);
+          NODE
+          index_id="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.index_id))' "$source_root/source-assets.json")"
+          gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$index_id" > "$source_root/snapshot-index.json"
+          node --input-type=module - "$source_root/release.json" "$source_root/snapshot-index.json" "$source_tag" "$source_root/source-assets.json" <<'NODE'
+          import fs from "node:fs";
+          const [releasePath, indexPath, requestedTag, outputPath] = process.argv.slice(2);
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+          if (!/^[a-f0-9]{64}$/.test(index.snapshot_id ?? "") || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(index.created_at ?? "")) process.exit(4);
+          if (requestedTag.slice(-12) !== index.snapshot_id.slice(0, 12)) process.exit(4);
+          if (!/^data-hub-[a-f0-9]{64}\.tar\.gz$/.test(index.archive?.name ?? "")) process.exit(4);
+          const names = ["snapshot-index.json", index.archive.name, `${index.archive.name}.sha256`];
+          if (release.assets.length !== 3 || names.some((name) => release.assets.filter((asset) => asset.name === name).length !== 1)) process.exit(4);
+          const assets = Object.fromEntries(names.map((name) => {
+            const asset = release.assets.find((item) => item.name === name);
+            if (!Number.isSafeInteger(asset.id) || !/^sha256:[a-f0-9]{64}$/.test(asset.digest ?? "")) process.exit(4);
+            return [name, { id: asset.id, digest: asset.digest }];
+          }));
+          fs.writeFileSync(outputPath, `${JSON.stringify({ archive_name: index.archive.name, assets })}\n`);
+          NODE
+          archive_name="$(node -e 'const value=require(process.argv[1]); process.stdout.write(value.archive_name)' "$source_root/source-assets.json")"
+          archive_id="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.assets[value.archive_name].id))' "$source_root/source-assets.json")"
+          checksum_id="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.assets[value.archive_name + ".sha256"].id))' "$source_root/source-assets.json")"
+          gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$archive_id" > "$source_root/$archive_name"
+          gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$checksum_id" > "$source_root/$archive_name.sha256"
+          node --input-type=module - "$source_root/source-assets.json" "$source_root" <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const [metadataPath, directory] = process.argv.slice(2);
+          const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+          for (const [name, asset] of Object.entries(metadata.assets)) {
+            const digest = crypto.createHash("sha256").update(fs.readFileSync(path.join(directory, name))).digest("hex");
+            if (asset.digest !== `sha256:${digest}`) throw new Error("source_asset_digest_mismatch");
+          }
+          NODE
+
+          npm run snapshot -- restore \
+            --archive "$source_root/$archive_name" \
+            --checksum "$source_root/$archive_name.sha256" \
+            --index "$source_root/snapshot-index.json" \
+            --target-data-dir "$restored_data"
+          npm run snapshot -- verify-state --data-dir "$restored_data"
+          npm run consumer -- create \
+            --data-dir "$restored_data" \
+            --snapshot-index "$source_root/snapshot-index.json" \
+            --source-tag "$source_tag" \
+            --output-dir "$bundle_dir" \
+            --code-sha "$code_sha"
+          npm run consumer -- verify \
+            --index "$bundle_dir/consumer-index.json" \
+            --payload "$bundle_dir/consumer-v1.json" \
+            --checksum "$bundle_dir/consumer-v1.json.sha256"
+          node --input-type=module - "$bundle_dir" <<'NODE'
+          import fs from "node:fs";
+          const actual = fs.readdirSync(process.argv[2]).sort();
+          const expected = ["consumer-index.json", "consumer-v1.json", "consumer-v1.json.sha256"];
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("unexpected_consumer_assets");
+          NODE
+          mapfile -t identity < <(node --input-type=module - "$bundle_dir/consumer-index.json" <<'NODE'
+          import fs from "node:fs";
+          const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(index.created_at ?? "") || !/^[a-f0-9]{64}$/.test(index.payload?.sha256 ?? "")) process.exit(4);
+          const timestamp = index.created_at.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+          const tag = `consumer-v1-${timestamp}-${index.payload.sha256.slice(0, 12)}`;
+          if (!/^consumer-v1-\d{8}T\d{6}Z-[a-f0-9]{12}$/.test(tag)) process.exit(4);
+          console.log(index.payload.sha256);
+          console.log(tag);
+          NODE
+          )
+          payload_sha="${identity[0]}"
+          consumer_tag="${identity[1]}"
+
+          verify_consumer_release() {
+            local release_json="$1"
+            local asset_dir="$2"
+            local metadata_json="$3"
+            node --input-type=module - "$release_json" "$consumer_tag" "$metadata_json" <<'NODE'
+          import fs from "node:fs";
+          const [releasePath, expectedTag, outputPath] = process.argv.slice(2);
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          const expectedNames = ["consumer-index.json", "consumer-v1.json", "consumer-v1.json.sha256"];
+          if (release.draft !== false || release.tag_name !== expectedTag || release.name !== expectedTag || release.assets.length !== 3) process.exit(4);
+          if (expectedNames.some((name) => release.assets.filter((asset) => asset.name === name).length !== 1)) process.exit(4);
+          const assets = Object.fromEntries(expectedNames.map((name) => {
+            const asset = release.assets.find((item) => item.name === name);
+            if (!Number.isSafeInteger(asset.id) || !/^sha256:[a-f0-9]{64}$/.test(asset.digest ?? "")) process.exit(4);
+            return [name, { id: asset.id, digest: asset.digest }];
+          }));
+          fs.writeFileSync(outputPath, `${JSON.stringify({ id: release.id, prerelease: release.prerelease, assets })}\n`);
+          NODE
+            mkdir -p "$asset_dir"
+            for asset_name in consumer-index.json consumer-v1.json consumer-v1.json.sha256; do
+              asset_id="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.assets[process.argv[2]].id))' "$metadata_json" "$asset_name")"
+              gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$asset_dir/$asset_name"
+            done
+            node --input-type=module - "$metadata_json" "$asset_dir" <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const [metadataPath, directory] = process.argv.slice(2);
+          const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+          for (const [name, asset] of Object.entries(metadata.assets)) {
+            const digest = crypto.createHash("sha256").update(fs.readFileSync(path.join(directory, name))).digest("hex");
+            if (asset.digest !== `sha256:${digest}`) throw new Error("uploaded_asset_digest_mismatch");
+          }
+          NODE
+            npm run consumer -- verify \
+              --index "$asset_dir/consumer-index.json" \
+              --payload "$asset_dir/consumer-v1.json" \
+              --checksum "$asset_dir/consumer-v1.json.sha256"
+            node --input-type=module - "$asset_dir/consumer-index.json" "$release_json" "$payload_sha" "$source_tag" <<'NODE'
+          import fs from "node:fs";
+          const [indexPath, releasePath, payloadSha, sourceTag] = process.argv.slice(2);
+          const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          const expectedNotes = `Verified ERP-Snack observation bundle from ${sourceTag}. Payload SHA-256: ${payloadSha}`;
+          if (
+            index.payload?.sha256 !== payloadSha ||
+            index.source_snapshot_tag !== sourceTag ||
+            index.code_sha !== release.target_commitish ||
+            release.body !== expectedNotes
+          ) throw new Error("consumer_release_provenance_mismatch");
+          NODE
+          }
+
+          existing_json="$work_root/existing-consumer.json"
+          gh api --paginate --slurp "/repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$work_root/consumer-releases.json"
+          existing_release_id="$(node --input-type=module - "$work_root/consumer-releases.json" "$consumer_tag" <<'NODE'
+          import fs from "node:fs";
+          const [releasesPath, expectedTag] = process.argv.slice(2);
+          const pages = JSON.parse(fs.readFileSync(releasesPath, "utf8"));
+          const releases = Array.isArray(pages[0]) ? pages.flat() : pages;
+          const consumerTagPattern = /^consumer-v1-\d{8}T\d{6}Z-[a-f0-9]{12}$/;
+          const matches = releases.filter((release) => consumerTagPattern.test(release.tag_name) && release.name === release.tag_name && release.tag_name === expectedTag);
+          if (matches.length > 1 || (matches.length === 1 && !Number.isSafeInteger(matches[0].id))) process.exit(4);
+          process.stdout.write(matches.length === 1 ? String(matches[0].id) : "none");
+          NODE
+          )"
+          if [ "$existing_release_id" != "none" ]; then
+            gh api "/repos/$GITHUB_REPOSITORY/releases/$existing_release_id" > "$existing_json"
+            verify_consumer_release "$existing_json" "$work_root/existing-assets" "$work_root/existing-assets.json"
+            existing_prerelease="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.prerelease))' "$work_root/existing-assets.json")"
+            if [ "$existing_prerelease" = "false" ]; then
+              echo "existing stable release: no_change"
+              exit 0
+            fi
+            if [ "$operation" = "manual" ]; then
+              echo "existing candidate in manual mode: no_change"
+              exit 0
+            fi
+
+            candidate_id="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.id))' "$work_root/existing-assets.json")"
+            cp "$existing_json" "$work_root/before-promotion.json"
+            gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" \
+              -F prerelease=false > "$work_root/after-promotion.json"
+            node --input-type=module - "$work_root/before-promotion.json" "$work_root/after-promotion.json" <<'NODE'
+          import assert from "node:assert/strict";
+          import fs from "node:fs";
+          const [beforePath, afterPath] = process.argv.slice(2);
+          const before = JSON.parse(fs.readFileSync(beforePath, "utf8"));
+          const after = JSON.parse(fs.readFileSync(afterPath, "utf8"));
+          if (before.prerelease !== true || after.prerelease !== false) process.exit(4);
+          for (const key of ["id", "tag_name", "name", "body", "target_commitish", "draft"]) assert.deepEqual(after[key], before[key]);
+          const identity = (asset) => ({ id: asset.id, name: asset.name, size: asset.size, digest: asset.digest });
+          assert.deepEqual(after.assets.map(identity), before.assets.map(identity));
+          NODE
+            echo "promoted verified candidate: $consumer_tag"
+            exit 0
+          fi
+
+          release_flags=()
+          expected_prerelease="false"
+          if [ "$operation" = "manual" ]; then
+            release_flags+=(--prerelease)
+            expected_prerelease="true"
+          fi
+          gh release create "$consumer_tag" \
+            --target "$code_sha" \
+            --title "$consumer_tag" \
+            --notes "Verified ERP-Snack observation bundle from $source_tag. Payload SHA-256: $payload_sha" \
+            "${release_flags[@]}" \
+            "$bundle_dir/consumer-index.json" \
+            "$bundle_dir/consumer-v1.json" \
+            "$bundle_dir/consumer-v1.json.sha256"
+          gh api "/repos/$GITHUB_REPOSITORY/releases/tags/$consumer_tag" > "$work_root/published-consumer.json"
+          verify_consumer_release "$work_root/published-consumer.json" "$work_root/published-assets" "$work_root/published-assets.json"
+          actual_prerelease="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.prerelease))' "$work_root/published-assets.json")"
+          test "$actual_prerelease" = "$expected_prerelease"

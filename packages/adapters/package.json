@@ -1,0 +1,13 @@
+{
+  "name": "@data-hub/adapters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@data-hub/canonical": "0.1.0",
+    "@data-hub/contracts": "0.1.0",
+    "@data-hub/snapshot": "0.1.0",
+    "@data-hub/source-registry": "0.1.0"
+  }
+}
