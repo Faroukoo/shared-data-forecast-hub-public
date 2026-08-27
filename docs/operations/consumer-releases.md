@@ -65,7 +65,7 @@ gh workflow run consumer-release.yml \
   -f mode=publish-prerelease
 ```
 
-Ce mode ne peut pas créer ou promouvoir une release stable. Le tag est dérivé de `consumer-index.json` sous la forme `consumer-v1-YYYYMMDDTHHMMSSZ-<12 premiers caractères du SHA-256 payload>`. Si une candidate portant exactement le même payload existe déjà, le résultat est `existing candidate in manual mode: no_change`. Si une stable exacte existe, le résultat est `existing stable release: no_change`.
+Ce mode ne peut pas créer ou promouvoir une release stable. Le job de publication refuse aussi tout dispatch dont la ref n'est pas exactement `refs/heads/<branche par défaut>` ; `--ref main` est donc une barrière appliquée par le workflow et pas seulement une convention opérateur. Le tag est dérivé de `consumer-index.json` sous la forme `consumer-v1-YYYYMMDDTHHMMSSZ-<12 premiers caractères du SHA-256 payload>`. Si une candidate portant exactement le même payload existe déjà, le résultat est `existing candidate in manual mode: no_change`. Si une stable exacte existe, le résultat est `existing stable release: no_change`.
 
 ## Contrôle d'intégrité d'une candidate ou d'une stable
 
@@ -99,9 +99,9 @@ Le second portail d'autorisation est l'activation de la production consommateur.
 gh variable set DATA_HUB_CONSUMER_PRODUCTION_ENABLED --body true
 ```
 
-La publication automatique reste inerte tant que la variable ne vaut pas exactement `true`. Elle ne part qu'après la réussite du workflow `Verified public data refresh` sur la branche par défaut du même dépôt. Elle ignore les inputs manuels, sélectionne la plus récente release `data-*` publiée, stable et valide, puis reconstruit le bundle.
+La publication automatique reste inerte tant que la variable ne vaut pas exactement `true`. Elle ne part qu'après la réussite du workflow `Verified public data refresh` sur la branche par défaut du même dépôt, lui-même déclenché par `schedule` ou `workflow_dispatch` ; tout autre type d'événement producteur est refusé. Elle ignore les inputs manuels, sélectionne la plus récente release `data-*` publiée, stable et valide, puis reconstruit le bundle.
 
-Si une candidate exacte existe, le workflow la retélécharge, vérifie ses trois digests et exécute `consumer verify` avant de basculer uniquement `prerelease` de `true` à `false`. Il ne modifie ni tag, ni titre, ni notes, ni target, ni asset, ni payload. Sans candidate et sans stable exacte, il crée directement une release stable immuable à partir du bundle vérifié. Une release `data-*` n'est jamais éditée.
+Si une candidate exacte existe, le workflow la retélécharge, vérifie ses trois digests, exécute `consumer verify`, exige les notes déterministes exactes et vérifie que `consumer-index.json.code_sha` est égal au `target_commitish` de la release avant de basculer uniquement `prerelease` de `true` à `false`. Il ne modifie ni tag, ni titre, ni notes, ni target, ni asset, ni payload. Sans candidate et sans stable exacte, il crée directement une release stable immuable à partir du bundle vérifié. Une release `data-*` n'est jamais éditée.
 
 Pour rendre les publications automatiques inertes après autorisation d'intervention externe :
 

@@ -168,7 +168,17 @@ void test("consumer releases run only from explicit dispatch or trusted refresh 
   const consumerJobs = jobs(workflow);
   assert.match(String(record(consumerJobs.verify, "verify").if), /workflow_dispatch/);
   const publishCondition = String(record(consumerJobs.publish, "publish").if);
+  assert.match(
+    publishCondition,
+    /github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/,
+  );
   assert.match(publishCondition, /workflow_run\.conclusion == 'success'/);
+  assert.match(publishCondition, /workflow_run\.event == 'schedule'/);
+  assert.match(
+    publishCondition,
+    /workflow_run\.event == 'workflow_dispatch'/,
+  );
+  assert.doesNotMatch(publishCondition, /workflow_run\.event\s*!=/);
   assert.match(
     publishCondition,
     /workflow_run\.head_repository\.full_name == github\.repository/,
@@ -180,6 +190,15 @@ void test("consumer releases run only from explicit dispatch or trusted refresh 
   assert.match(
     publishCondition,
     /vars\.DATA_HUB_CONSUMER_PRODUCTION_ENABLED == 'true'/,
+  );
+
+  const checkout = steps(consumerJobs.publish).find(
+    (step) => step.uses === `actions/checkout@${CHECKOUT_SHA}`,
+  );
+  assert.notEqual(checkout, undefined);
+  assert.equal(
+    record(checkout?.with, "publish.checkout.with").ref,
+    "${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}",
   );
 });
 
@@ -240,6 +259,20 @@ void test("consumer publication is immutable, bounded to three assets and candid
   assert.doesNotMatch(
     publishCommands,
     /--method PATCH[^\n]*(?:tag_name|name=|body=|assets?=)/,
+  );
+  assert.match(publishCommands, /release\.body !== expectedNotes/);
+  assert.match(
+    publishCommands,
+    /const expectedNotes = `Verified ERP-Snack observation bundle from \$\{sourceTag\}\. Payload SHA-256: \$\{payloadSha\}`/,
+  );
+  assert.match(
+    publishCommands,
+    /index\.code_sha !== release\.target_commitish/,
+  );
+  assert.match(publishCommands, /consumer_release_provenance_mismatch/);
+  assert.ok(
+    publishCommands.indexOf("consumer_release_provenance_mismatch") <
+      publishCommands.indexOf("--method PATCH"),
   );
   assert.match(publishCommands, /uploaded_asset_digest_mismatch/);
 });

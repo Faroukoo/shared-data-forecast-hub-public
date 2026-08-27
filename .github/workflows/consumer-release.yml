@@ -190,10 +190,12 @@ jobs:
     if: >-
       ${{ github.event.repository.visibility == 'public' &&
           ((github.event_name == 'workflow_dispatch' &&
-            inputs.mode == 'publish-prerelease') ||
+            inputs.mode == 'publish-prerelease' &&
+            github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
            (github.event_name == 'workflow_run' &&
             github.event.workflow_run.conclusion == 'success' &&
-            github.event.workflow_run.event != 'pull_request' &&
+            (github.event.workflow_run.event == 'schedule' ||
+             github.event.workflow_run.event == 'workflow_dispatch') &&
             github.event.workflow_run.head_repository.full_name == github.repository &&
             github.event.workflow_run.head_branch == github.event.repository.default_branch &&
             vars.DATA_HUB_CONSUMER_PRODUCTION_ENABLED == 'true')) }}
@@ -378,11 +380,18 @@ jobs:
               --index "$asset_dir/consumer-index.json" \
               --payload "$asset_dir/consumer-v1.json" \
               --checksum "$asset_dir/consumer-v1.json.sha256"
-            node --input-type=module - "$asset_dir/consumer-index.json" "$payload_sha" "$source_tag" <<'NODE'
+            node --input-type=module - "$asset_dir/consumer-index.json" "$release_json" "$payload_sha" "$source_tag" <<'NODE'
           import fs from "node:fs";
-          const [indexPath, payloadSha, sourceTag] = process.argv.slice(2);
+          const [indexPath, releasePath, payloadSha, sourceTag] = process.argv.slice(2);
           const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
-          if (index.payload?.sha256 !== payloadSha || index.source_snapshot_tag !== sourceTag) throw new Error("consumer_tag_collision");
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          const expectedNotes = `Verified ERP-Snack observation bundle from ${sourceTag}. Payload SHA-256: ${payloadSha}`;
+          if (
+            index.payload?.sha256 !== payloadSha ||
+            index.source_snapshot_tag !== sourceTag ||
+            index.code_sha !== release.target_commitish ||
+            release.body !== expectedNotes
+          ) throw new Error("consumer_release_provenance_mismatch");
           NODE
           }
 
