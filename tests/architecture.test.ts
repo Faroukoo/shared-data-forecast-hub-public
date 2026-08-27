@@ -49,6 +49,39 @@ void test("consumer-facing packages cannot import connector or artifact internal
   }
 });
 
+void test("workspace architecture keeps adapters on the public data boundary", async () => {
+  const contracts = await sourceFilesUnder(["packages/contracts"]);
+  for (const file of contracts) {
+    const source = await readFile(file, "utf8");
+    assert.doesNotMatch(source, /@data-hub\//, file);
+  }
+
+  const upstreamPackages = await sourceFilesUnder([
+    "packages/connectors",
+    "packages/parsers",
+    "packages/quality",
+  ]);
+  for (const file of upstreamPackages) {
+    const source = await readFile(file, "utf8");
+    assert.doesNotMatch(source, /@data-hub\/adapters/, file);
+  }
+
+  const adapters = await sourceFilesUnder(["packages/adapters"]);
+  const allowedAdapterImports = new Set([
+    "@data-hub/canonical",
+    "@data-hub/contracts",
+    "@data-hub/snapshot",
+    "@data-hub/source-registry",
+  ]);
+  for (const file of adapters) {
+    const source = await readFile(file, "utf8");
+    const imports = source.matchAll(/from\s+["'](@data-hub\/[^"']+)["']/g);
+    for (const match of imports) {
+      assert.equal(allowedAdapterImports.has(match[1] ?? ""), true, file);
+    }
+  }
+});
+
 void test("runtime and large binary paths are ignored", async () => {
   assert.equal(await gitCheckIgnore(".data-hub/raw/example/artifact"), true);
   assert.equal(await gitCheckIgnore("dist/ingest-cli.js"), true);
