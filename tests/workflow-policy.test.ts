@@ -264,6 +264,20 @@ void test("consumer jobs keep the selected data release tag authoritative", asyn
   }
 });
 
+void test("consumer jobs pass their validated selected tag to the consumer CLI", async () => {
+  const workflow = await loadWorkflow(CONSUMER_PATH);
+  const consumerJobs = jobs(workflow);
+
+  assert.match(
+    commands(consumerJobs.verify),
+    /--source-tag "\$SOURCE_RELEASE_TAG"/,
+  );
+  assert.match(
+    commands(consumerJobs.publish),
+    /--source-tag "\$source_tag"/,
+  );
+});
+
 void test("consumer publication is immutable, bounded to three assets and candidate-first", async () => {
   const workflow = await loadWorkflow(CONSUMER_PATH);
   const publishCommands = commands(jobs(workflow).publish);
