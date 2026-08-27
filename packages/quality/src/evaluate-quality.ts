@@ -88,20 +88,28 @@ function coverageShrank(
   );
 }
 
-function freshnessWarning(
-  source: SourceDefinition,
-  now: string,
-  remoteLastModified: string | null | undefined,
-): "source_stale" | "source_late" | "invalid_remote_timestamp" | null {
-  if (!remoteLastModified) return null;
-  const nowMs = Date.parse(now);
-  const modifiedMs = Date.parse(remoteLastModified);
+export type FreshnessCode =
+  | "source_stale"
+  | "source_late"
+  | "invalid_remote_timestamp"
+  | null;
+
+export interface AssessFreshnessInput {
+  source: SourceDefinition;
+  now: string;
+  remoteLastModified: string | null | undefined;
+}
+
+export function assessFreshness(input: AssessFreshnessInput): FreshnessCode {
+  if (!input.remoteLastModified) return null;
+  const nowMs = Date.parse(input.now);
+  const modifiedMs = Date.parse(input.remoteLastModified);
   if (!Number.isFinite(nowMs) || !Number.isFinite(modifiedMs)) {
     return "invalid_remote_timestamp";
   }
   const ageDays = (nowMs - modifiedMs) / 86_400_000;
-  if (ageDays > source.cadence.expiry_age_days) return "source_stale";
-  if (ageDays > source.cadence.warning_age_days) return "source_late";
+  if (ageDays > input.source.cadence.expiry_age_days) return "source_stale";
+  if (ageDays > input.source.cadence.warning_age_days) return "source_late";
   return null;
 }
 
@@ -174,7 +182,11 @@ export function evaluateQuality(input: EvaluateQualityInput): QualityReport {
   ];
 
   const warningCodes = [...parsed.warning_codes];
-  const freshness = freshnessWarning(source, input.now, input.remoteLastModified);
+  const freshness = assessFreshness({
+    source,
+    now: input.now,
+    remoteLastModified: input.remoteLastModified,
+  });
   if (freshness) warningCodes.push(freshness);
   if (coverageShrank(parsed, input.previousCoverage)) {
     warningCodes.push("coverage_shrinkage");

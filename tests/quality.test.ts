@@ -6,6 +6,7 @@ import {
   type SourceDefinition,
 } from "@data-hub/contracts";
 import {
+  assessFreshness,
   deriveSourceHealth,
   evaluateQuality,
 } from "@data-hub/quality";
@@ -125,4 +126,15 @@ void test("warns on coverage shrinkage and a newly observed label", () => {
   assert.equal(report.status, "accepted_with_warning");
   assert.equal(report.warning_codes.includes("coverage_shrinkage"), true);
   assert.equal(report.warning_codes.includes("new_label"), true);
+});
+
+void test("assesses unchanged source freshness without reparsing", () => {
+  assert.equal(
+    assessFreshness({
+      source: HCP_IPC_2017_SOURCE,
+      now: "2026-08-26T00:00:00.000Z",
+      remoteLastModified: "2026-04-01T00:00:00.000Z",
+    }),
+    "source_stale",
+  );
 });

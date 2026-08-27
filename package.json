@@ -12,11 +12,15 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsup --config tsup.config.ts",
     "ingest": "tsx apps/ingest-cli/src/index.ts ingest",
+    "ingest:production": "tsx apps/ingest-cli/src/index.ts production-run",
+    "health:sync": "tsx apps/ingest-cli/src/index.ts health-sync",
+    "snapshot": "tsx apps/ingest-cli/src/index.ts snapshot",
     "smoke:ckan": "tsx apps/ingest-cli/src/index.ts smoke"
   },
   "dependencies": {
     "decimal.js": "10.6.0",
     "exceljs": "4.4.0",
+    "tar": "7.5.22",
     "unzipper": "0.12.5",
     "zod": "4.4.3"
   },
@@ -28,6 +32,7 @@
     "tsx": "4.23.12",
     "tsup": "8.5.1",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.68.0"
+    "typescript-eslint": "8.68.0",
+    "yaml": "2.9.0"
   }
 }

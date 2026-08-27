@@ -37,6 +37,7 @@ void test("consumer-facing packages cannot import connector or artifact internal
   const files = await sourceFilesUnder([
     "packages/contracts",
     "packages/canonical",
+    "packages/snapshot",
   ]);
   for (const file of files) {
     const source = await readFile(file, "utf8");
@@ -75,7 +76,11 @@ void test("tracked files contain no data workbook or canonical export", async ()
   const { stdout } = await execFileAsync("git", ["ls-files"]);
   const tracked = stdout.split("\n").filter(Boolean);
   assert.deepEqual(
-    tracked.filter((path) => /\.(?:xlsx|xls|csv|jsonl)$/i.test(path)),
+    tracked.filter(
+      (path) =>
+        path.startsWith(".data-hub/") ||
+        /\.(?:xlsx|xls|csv|jsonl|tar\.gz|sha256)$/i.test(path),
+    ),
     [],
   );
 });

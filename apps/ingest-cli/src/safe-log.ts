@@ -10,7 +10,7 @@ export interface FailedLogEvent {
   requestTarget: string | null;
 }
 
-function safeCode(value: string): string {
+export function sanitizeSafeCode(value: string): string {
   return /^[a-z0-9][a-z0-9_.:-]*$/.test(value) ? value : "unsafe_failure_code";
 }
 
@@ -39,7 +39,7 @@ export function createSafeLogger(writeLine: WriteLine = console.log) {
       writeLine(
         JSON.stringify({
           event: "ingestion_run_completed",
-          source_id: safeCode(run.source_id),
+          source_id: sanitizeSafeCode(run.source_id),
           run_id: safeIdentifier(run.run_id),
           state: run.state,
           parsed_count: run.parsed_count,
@@ -54,10 +54,10 @@ export function createSafeLogger(writeLine: WriteLine = console.log) {
       writeLine(
         JSON.stringify({
           event: "ingestion_run_failed",
-          source_id: safeCode(event.sourceId),
+          source_id: sanitizeSafeCode(event.sourceId),
           run_id: safeIdentifier(event.runId),
           state: event.state,
-          failure_code: safeCode(event.failureCode),
+          failure_code: sanitizeSafeCode(event.failureCode),
           request_target: safeUrl(event.requestTarget),
         }),
       );
