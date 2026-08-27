@@ -8,6 +8,7 @@ import {
 import { getSourceDefinition } from "@data-hub/source-registry";
 
 import { runManualIngestion, runRemoteIngestion } from "./run-ingestion.js";
+import { executeConsumerCommand } from "./consumer-command.js";
 import { executeProductionCommand } from "./production-command.js";
 import { executeHealthCommand } from "./health-command.js";
 import { createSafeLogger } from "./safe-log.js";
@@ -52,6 +53,9 @@ async function execute(argv: string[]): Promise<number> {
   }
   if (command === "health-sync") {
     return executeHealthCommand(argv.slice(1));
+  }
+  if (command === "consumer") {
+    return executeConsumerCommand(argv.slice(1));
   }
   if (command === "smoke") {
     if (process.env.DATA_HUB_ALLOW_NETWORK !== "1") throw new Error("network_not_enabled");

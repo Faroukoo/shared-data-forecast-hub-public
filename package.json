@@ -15,6 +15,7 @@
     "ingest:production": "tsx apps/ingest-cli/src/index.ts production-run",
     "health:sync": "tsx apps/ingest-cli/src/index.ts health-sync",
     "snapshot": "tsx apps/ingest-cli/src/index.ts snapshot",
+    "consumer": "tsx apps/ingest-cli/src/index.ts consumer",
     "smoke:ckan": "tsx apps/ingest-cli/src/index.ts smoke"
   },
   "dependencies": {
