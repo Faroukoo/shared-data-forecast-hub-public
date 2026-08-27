@@ -241,6 +241,29 @@ void test("consumer jobs restore and verify one exact three-asset data release i
   assert.doesNotMatch(commands(consumerJobs.verify), /gh release create|--method PATCH/);
 });
 
+void test("consumer jobs keep the selected data release tag authoritative", async () => {
+  const workflow = await loadWorkflow(CONSUMER_PATH);
+  const consumerJobs = jobs(workflow);
+  const snapshotCreatedAt = "2026-08-27T09:50:54.738Z";
+  const selectedReleaseTag = "data-20260827T095123Z-9d3b77bbfc0c";
+
+  assert.notEqual(
+    selectedReleaseTag,
+    `data-${snapshotCreatedAt.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")}-9d3b77bbfc0c`,
+  );
+  for (const jobName of ["verify", "publish"]) {
+    const jobCommands = commands(consumerJobs[jobName]);
+    assert.match(
+      jobCommands,
+      /requestedTag\.slice\(-12\) !== index\.snapshot_id\.slice\(0, 12\)/,
+    );
+    assert.doesNotMatch(
+      jobCommands,
+      /`data-\$\{timestamp\}-\$\{index\.snapshot_id\.slice\(0, 12\)\}`/,
+    );
+  }
+});
+
 void test("consumer publication is immutable, bounded to three assets and candidate-first", async () => {
   const workflow = await loadWorkflow(CONSUMER_PATH);
   const publishCommands = commands(jobs(workflow).publish);

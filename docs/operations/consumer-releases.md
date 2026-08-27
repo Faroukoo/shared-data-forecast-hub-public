@@ -10,6 +10,8 @@ Une release `consumer-v1-*` est une projection publique en lecture seule d'une r
 
 Le workflow ne consomme jamais `latest`, un brouillon ou une prérelease `data-*`. Il restaure les trois assets source dans le répertoire temporaire du runner, vérifie l'état complet, reconstruit la projection puis vérifie le bundle avant toute décision de publication. Le mode `verify` n'a qu'un jeton `contents: read` et n'écrit aucune release.
 
+Le tag `data-*` exact de la release publique sélectionnée est la métadonnée source autoritaire. Son suffixe de 12 caractères doit correspondre au début du `snapshot_id`, mais son horodatage de publication n'est pas reconstruit depuis `snapshot-index.json.created_at`, qui peut être antérieur de quelques secondes.
+
 ## Création et vérification locales
 
 Partir d'une release `data-*` déjà téléchargée, restaurée et validée selon `docs/operations/import-and-recovery.md`. Utiliser des répertoires neufs hors du checkout :

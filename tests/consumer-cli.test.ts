@@ -19,7 +19,7 @@ import { main } from "../apps/ingest-cli/src/index.js";
 
 const SNAPSHOT_ID = `9d3b77bbfc0c${"a".repeat(52)}`;
 const SNAPSHOT_TAG = "data-20260827T095123Z-9d3b77bbfc0c";
-const CREATED_AT = "2026-08-27T09:51:23.000Z";
+const CREATED_AT = "2026-08-27T09:50:54.738Z";
 const CODE_SHA = "c".repeat(40);
 const PAYLOAD_DIGEST = "d".repeat(64);
 
@@ -146,7 +146,7 @@ function createArgs(snapshotIndex: string): string[] {
   ];
 }
 
-void test("consumer create maps exact options and logs only safe release identifiers", async (t) => {
+void test("consumer create forwards the authoritative source tag when release and snapshot times differ", async (t) => {
   const snapshotIndex = await snapshotIndexFile(t);
   const consumerPayload = payload();
   let buildCalled = false;
@@ -158,6 +158,7 @@ void test("consumer create maps exact options and logs only safe release identif
         buildCalled = true;
         assert.equal(input.dataDir, "/data/current");
         assert.deepEqual(input.snapshot, snapshot());
+        assert.equal(input.sourceTag, SNAPSHOT_TAG);
         return Promise.resolve(consumerPayload);
       },
       writeBundle: (input) => {
@@ -326,9 +327,18 @@ void test("consumer create maps a source tag mismatch to validation exit 4", asy
   const args = createArgs(snapshotIndex);
   args[args.indexOf(SNAPSHOT_TAG)] =
     "data-20260827T095123Z-aaaaaaaaaaaa";
-  const result = await captureLogs(() => executeConsumerCommand(args));
+  let buildCalled = false;
+  const result = await captureLogs(() =>
+    executeConsumerCommand(args, {
+      buildConsumer: () => {
+        buildCalled = true;
+        return Promise.resolve(payload());
+      },
+    }),
+  );
 
   assert.equal(result.exitCode, 4);
+  assert.equal(buildCalled, false);
 });
 
 void test("consumer failures never print arbitrary errors, paths or payload content", async (t) => {

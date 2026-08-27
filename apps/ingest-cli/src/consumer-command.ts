@@ -11,7 +11,6 @@ import {
 import {
   SnapshotIndexSchema,
   type ConsumerPayload,
-  type SnapshotIndex,
 } from "@data-hub/contracts";
 
 import {
@@ -47,13 +46,6 @@ export interface ConsumerCommandDependencies {
   verifyBundle?: (
     input: VerifyConsumerBundleInput,
   ) => Promise<ConsumerBundleIdentity>;
-}
-
-function sourceTag(snapshot: SnapshotIndex): string {
-  const timestamp = snapshot.created_at
-    .replace(/[-:]/g, "")
-    .replace(/\.\d{3}Z$/, "Z");
-  return `data-${timestamp}-${snapshot.snapshot_id.slice(0, 12)}`;
 }
 
 function assertBundleIdentity(
@@ -100,12 +92,12 @@ async function createConsumerBundle(
   const snapshot = SnapshotIndexSchema.parse(
     JSON.parse(await readFile(snapshotIndexPath, "utf8")) as unknown,
   );
-  if (sourceTag(snapshot) !== requestedSourceTag) {
-    throw new Error("consumer_source_tag_mismatch");
+  if (requestedSourceTag.slice(-12) !== snapshot.snapshot_id.slice(0, 12)) {
+    throw new Error("consumer_source_tag_snapshot_mismatch");
   }
   const payload = await (
     dependencies.buildConsumer ?? buildErpSnackConsumer
-  )({ dataDir, snapshot });
+  )({ dataDir, snapshot, sourceTag: requestedSourceTag });
   if (payload.source_snapshot_tag !== requestedSourceTag) {
     throw new Error("consumer_source_tag_mismatch");
   }

@@ -81,8 +81,7 @@ jobs:
           const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
           const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
           if (!/^[a-f0-9]{64}$/.test(index.snapshot_id ?? "") || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(index.created_at ?? "")) process.exit(4);
-          const timestamp = index.created_at.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-          if (`data-${timestamp}-${index.snapshot_id.slice(0, 12)}` !== requestedTag) process.exit(4);
+          if (requestedTag.slice(-12) !== index.snapshot_id.slice(0, 12)) process.exit(4);
           if (!/^data-hub-[a-f0-9]{64}\.tar\.gz$/.test(index.archive?.name ?? "")) process.exit(4);
           const names = ["snapshot-index.json", index.archive.name, `${index.archive.name}.sha256`];
           if (release.assets.length !== 3 || names.some((name) => release.assets.filter((asset) => asset.name === name).length !== 1)) process.exit(4);
@@ -277,8 +276,7 @@ jobs:
           const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
           const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
           if (!/^[a-f0-9]{64}$/.test(index.snapshot_id ?? "") || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(index.created_at ?? "")) process.exit(4);
-          const timestamp = index.created_at.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-          if (`data-${timestamp}-${index.snapshot_id.slice(0, 12)}` !== requestedTag) process.exit(4);
+          if (requestedTag.slice(-12) !== index.snapshot_id.slice(0, 12)) process.exit(4);
           if (!/^data-hub-[a-f0-9]{64}\.tar\.gz$/.test(index.archive?.name ?? "")) process.exit(4);
           const names = ["snapshot-index.json", index.archive.name, `${index.archive.name}.sha256`];
           if (release.assets.length !== 3 || names.some((name) => release.assets.filter((asset) => asset.name === name).length !== 1)) process.exit(4);

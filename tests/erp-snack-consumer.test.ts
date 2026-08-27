@@ -31,8 +31,9 @@ import {
   createIpcFixture,
 } from "./fixture-workbooks.js";
 
-const SNAPSHOT_CREATED_AT = "2026-08-27T09:51:23.000Z";
+const SNAPSHOT_CREATED_AT = "2026-08-27T09:50:54.738Z";
 const SNAPSHOT_ID = "9d3b77bbfc0cf05cbc0f2e27f24cfb0b348ce0e5d71b09267fbd7ce67657e226";
+const SOURCE_RELEASE_TAG = "data-20260827T095123Z-9d3b77bbfc0c";
 const DATASET_ID = `sha256:${"d".repeat(64)}`;
 const ARTIFACT_SHA256 = "a".repeat(64);
 
@@ -166,6 +167,7 @@ void test("projects the exact deterministic ERP-Snack macro profile", () => {
     observations: rows,
     snapshot: snapshot(),
     source: HCP_IPC_2017_SOURCE,
+    sourceTag: SOURCE_RELEASE_TAG,
   };
 
   const payload = projectErpSnackObservations(input);
@@ -190,13 +192,33 @@ void test("projects the exact deterministic ERP-Snack macro profile", () => {
   assert.equal(payload.coverage_start, "2022-12-01");
   assert.equal(payload.coverage_end, "2024-11-30");
   assert.equal(payload.generated_at, SNAPSHOT_CREATED_AT);
-  assert.equal(payload.source_snapshot_tag, "data-20260827T095123Z-9d3b77bbfc0c");
+  assert.equal(payload.source_snapshot_tag, SOURCE_RELEASE_TAG);
   const payloadSource = payload.sources[0] ?? assert.fail("missing payload source");
   assert.equal(payloadSource.health_status, "stale");
   assert.equal(payloadSource.age_days_at_snapshot, 635);
   assert.deepEqual(payloadSource.warning_codes, ["source_stale"]);
   assert.equal(JSON.stringify(payload), JSON.stringify(reversedPayload));
   ConsumerPayloadSchema.parse(payload);
+});
+
+void test("binds the authoritative source release tag to the snapshot suffix", () => {
+  const input = {
+    observations: completeProfileObservations(),
+    snapshot: snapshot(),
+    source: HCP_IPC_2017_SOURCE,
+  };
+
+  assert.throws(
+    () => projectErpSnackObservations({ ...input, sourceTag: "latest" }),
+    /consumer_source_tag_invalid/,
+  );
+  assert.throws(
+    () => projectErpSnackObservations({
+      ...input,
+      sourceTag: "data-20260827T095123Z-aaaaaaaaaaaa",
+    }),
+    /consumer_source_tag_snapshot_mismatch/,
+  );
 });
 
 void test("rejects a profile missing one exact series and location tuple", () => {
@@ -209,6 +231,7 @@ void test("rejects a profile missing one exact series and location tuple", () =>
       observations: rows,
       snapshot: snapshot(),
       source: HCP_IPC_2017_SOURCE,
+      sourceTag: SOURCE_RELEASE_TAG,
     }),
     /consumer_profile_series_missing/,
   );
@@ -261,6 +284,7 @@ void test("validates the restored state before projecting an incomplete fixture"
     () => buildErpSnackConsumer({
       dataDir: fixture.dataDir,
       snapshot: fixture.snapshot,
+      sourceTag: SOURCE_RELEASE_TAG,
     }),
     /consumer_profile_series_missing/,
   );
@@ -275,21 +299,33 @@ void test("rejects unqualified source and licence state before projection", asyn
   try {
     HCP_IPC_2017_SOURCE.authority_level = "licensed";
     await assert.rejects(
-      () => buildErpSnackConsumer({ dataDir: fixture.dataDir, snapshot: fixture.snapshot }),
+      () => buildErpSnackConsumer({
+        dataDir: fixture.dataDir,
+        snapshot: fixture.snapshot,
+        sourceTag: SOURCE_RELEASE_TAG,
+      }),
       /source_not_qualified/,
     );
     HCP_IPC_2017_SOURCE.authority_level = originalAuthority;
 
     HCP_IPC_2017_SOURCE.enabled = false;
     await assert.rejects(
-      () => buildErpSnackConsumer({ dataDir: fixture.dataDir, snapshot: fixture.snapshot }),
+      () => buildErpSnackConsumer({
+        dataDir: fixture.dataDir,
+        snapshot: fixture.snapshot,
+        sourceTag: SOURCE_RELEASE_TAG,
+      }),
       /source_not_qualified/,
     );
     HCP_IPC_2017_SOURCE.enabled = originalEnabled;
 
     HCP_IPC_2017_SOURCE.licence.permits_redistribution = false;
     await assert.rejects(
-      () => buildErpSnackConsumer({ dataDir: fixture.dataDir, snapshot: fixture.snapshot }),
+      () => buildErpSnackConsumer({
+        dataDir: fixture.dataDir,
+        snapshot: fixture.snapshot,
+        sourceTag: SOURCE_RELEASE_TAG,
+      }),
       /redistribution_not_permitted/,
     );
   } finally {
@@ -307,7 +343,11 @@ void test("rejects unqualified source and licence state before projection", asyn
     `${JSON.stringify(artifactManifest, null, 2)}\n`,
   );
   await assert.rejects(
-    () => buildErpSnackConsumer({ dataDir: fixture.dataDir, snapshot: fixture.snapshot }),
+    () => buildErpSnackConsumer({
+      dataDir: fixture.dataDir,
+      snapshot: fixture.snapshot,
+      sourceTag: SOURCE_RELEASE_TAG,
+    }),
     /artifact_source_mismatch/,
   );
 });

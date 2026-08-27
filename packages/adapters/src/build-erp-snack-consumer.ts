@@ -23,6 +23,7 @@ import {
 } from "./erp-snack-profile.js";
 
 const DAY_MS = 86_400_000;
+const SOURCE_TAG_PATTERN = /^data-\d{8}T\d{6}Z-[a-f0-9]{12}$/;
 
 type ErpSnackSeries = (typeof ERP_SNACK_SERIES)[number];
 type AdmittedCanonicalObservation = CanonicalObservation & {
@@ -32,6 +33,7 @@ type AdmittedCanonicalObservation = CanonicalObservation & {
 export interface BuildErpSnackConsumerInput {
   dataDir: string;
   snapshot: SnapshotIndex;
+  sourceTag: string;
 }
 
 function compareCodeUnits(left: string, right: string): number {
@@ -59,11 +61,14 @@ function observationOrder(
   );
 }
 
-function snapshotTag(snapshot: SnapshotIndex): string {
-  const timestamp = snapshot.created_at
-    .replace(/[-:]/g, "")
-    .replace(/\.\d{3}Z$/, "Z");
-  return `data-${timestamp}-${snapshot.snapshot_id.slice(0, 12)}`;
+function validateSourceTag(sourceTag: string, snapshot: SnapshotIndex): string {
+  if (!SOURCE_TAG_PATTERN.test(sourceTag)) {
+    throw new Error("consumer_source_tag_invalid");
+  }
+  if (sourceTag.slice(-12) !== snapshot.snapshot_id.slice(0, 12)) {
+    throw new Error("consumer_source_tag_snapshot_mismatch");
+  }
+  return sourceTag;
 }
 
 function ageDaysAtSnapshot(periodEnd: string, createdAt: string): number {
@@ -92,7 +97,9 @@ export function projectErpSnackObservations(input: {
   observations: readonly CanonicalObservation[];
   snapshot: SnapshotIndex;
   source: SourceDefinition;
+  sourceTag: string;
 }): ConsumerPayload {
+  const sourceTag = validateSourceTag(input.sourceTag, input.snapshot);
   const seriesByKey = new Map<string, ErpSnackSeries>(
     ERP_SNACK_SERIES.map((series) => [series.seriesKey, series]),
   );
@@ -194,7 +201,7 @@ export function projectErpSnackObservations(input: {
   return ConsumerPayloadSchema.parse({
     schema_version: SCHEMA_VERSION,
     consumer_contract: CONSUMER_CONTRACT,
-    source_snapshot_tag: snapshotTag(input.snapshot),
+    source_snapshot_tag: sourceTag,
     source_snapshot_id: input.snapshot.snapshot_id,
     generated_at: input.snapshot.created_at,
     profile_id: CONSUMER_PROFILE,
@@ -259,5 +266,6 @@ export async function buildErpSnackConsumer(
     observations: rows,
     snapshot: input.snapshot,
     source: HCP_IPC_2017_SOURCE,
+    sourceTag: input.sourceTag,
   });
 }
