@@ -23,3 +23,9 @@ export function getSourceDefinition(sourceId: string): SourceDefinition {
   }
   return source;
 }
+
+export function listEnabledSourceDefinitions(): SourceDefinition[] {
+  return [...SOURCES.values()]
+    .filter((source) => source.enabled && source.access_mode !== "disabled")
+    .sort((left, right) => left.source_id.localeCompare(right.source_id));
+}

@@ -8,7 +8,10 @@ import {
 import { getSourceDefinition } from "@data-hub/source-registry";
 
 import { runManualIngestion, runRemoteIngestion } from "./run-ingestion.js";
+import { executeProductionCommand } from "./production-command.js";
+import { executeHealthCommand } from "./health-command.js";
 import { createSafeLogger } from "./safe-log.js";
+import { executeSnapshotCommand } from "./snapshot-command.js";
 
 const EXIT_BY_STATE = {
   published: 0,
@@ -41,6 +44,15 @@ function required(values: Map<string, string>, key: string): string {
 async function execute(argv: string[]): Promise<number> {
   const logger = createSafeLogger();
   const command = argv[0];
+  if (command === "production-run") {
+    return executeProductionCommand(argv.slice(1));
+  }
+  if (command === "snapshot") {
+    return executeSnapshotCommand(argv.slice(1));
+  }
+  if (command === "health-sync") {
+    return executeHealthCommand(argv.slice(1));
+  }
   if (command === "smoke") {
     if (process.env.DATA_HUB_ALLOW_NETWORK !== "1") throw new Error("network_not_enabled");
     const values = options(argv.slice(1));

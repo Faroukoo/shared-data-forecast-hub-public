@@ -1,0 +1,307 @@
+name: Verified public data refresh
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+      timezone: "Europe/Paris"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Production operation
+        type: choice
+        options: [refresh, publish-bootstrap, restore-drill]
+        default: refresh
+      bootstrap_release_id:
+        description: Exact numeric draft release ID for bootstrap publication
+        type: string
+        required: false
+
+permissions: {}
+
+concurrency:
+  group: data-hub-production
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: >-
+      ${{ github.event.repository.visibility == 'public' &&
+          (github.event_name == 'workflow_dispatch' ||
+           vars.DATA_HUB_PRODUCTION_ENABLED == 'true') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      summary_b64: ${{ steps.result.outputs.summary_b64 }}
+      production_exit: ${{ steps.production.outputs.exit_code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.3
+      - name: Install and build
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Select operation
+        id: context
+        env:
+          REQUESTED_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'refresh' }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_MODE" in
+            refresh|publish-bootstrap|restore-drill) ;;
+            *) exit 64 ;;
+          esac
+          echo "mode=$REQUESTED_MODE" >> "$GITHUB_OUTPUT"
+      - name: Select exact release and index asset
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ steps.context.outputs.mode }}
+          BOOTSTRAP_RELEASE_ID: ${{ inputs.bootstrap_release_id }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/snapshot"
+          mkdir -p "$release_dir"
+          if [ "$MODE" = "publish-bootstrap" ]; then
+            case "$BOOTSTRAP_RELEASE_ID" in
+              ''|*[!0-9]*) exit 64 ;;
+            esac
+            release_id="$BOOTSTRAP_RELEASE_ID"
+          else
+            gh api "/repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$release_dir/releases.json"
+            release_id="$(node --input-type=module -e '
+              import fs from "node:fs";
+              const releases = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              const release = releases
+                .filter((item) => item.draft === false && item.prerelease === false && /^data-/.test(item.name))
+                .sort((left, right) => Date.parse(right.published_at) - Date.parse(left.published_at))[0];
+              if (!release || !Number.isSafeInteger(release.id)) process.exit(4);
+              process.stdout.write(String(release.id));
+            ' "$release_dir/releases.json")"
+          fi
+          gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id" > "$release_dir/release.json"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const [releasePath, outputPath, mode] = process.argv.slice(1);
+            const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+            if ((mode === "publish-bootstrap" ? release.draft !== true : release.draft !== false) || release.prerelease !== false) process.exit(4);
+            if (!/^data-\d{8}T\d{6}Z-[a-f0-9]{12}$/.test(release.name) || release.tag_name !== release.name) process.exit(4);
+            const indexes = release.assets.filter((asset) => asset.name === "snapshot-index.json");
+            if (indexes.length !== 1 || !Number.isSafeInteger(indexes[0].id)) process.exit(4);
+            fs.appendFileSync(outputPath, `release_id=${release.id}\nrelease_tag=${release.tag_name}\nindex_asset_id=${indexes[0].id}\n`);
+          ' "$release_dir/release.json" "$GITHUB_OUTPUT" "$MODE"
+          index_id="$(node --input-type=module -e '
+            import fs from "node:fs";
+            const release = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            process.stdout.write(String(release.assets.find((asset) => asset.name === "snapshot-index.json").id));
+          ' "$release_dir/release.json")"
+          gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$index_id" > "$release_dir/snapshot-index.json"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const [indexPath, releasePath, outputPath] = process.argv.slice(1);
+            const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+            const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+            if (!/^data-hub-[a-f0-9]{64}\.tar\.gz$/.test(index.archive?.name)) process.exit(4);
+            const names = ["snapshot-index.json", index.archive.name, `${index.archive.name}.sha256`];
+            if (release.assets.length !== 3 || names.some((name) => release.assets.filter((asset) => asset.name === name).length !== 1)) process.exit(4);
+            for (const name of names) {
+              const asset = release.assets.find((item) => item.name === name);
+              if (!Number.isSafeInteger(asset.id) || !/^sha256:[a-f0-9]{64}$/.test(asset.digest ?? "")) process.exit(4);
+            }
+            const archive = release.assets.find((asset) => asset.name === index.archive.name);
+            const checksum = release.assets.find((asset) => asset.name === `${index.archive.name}.sha256`);
+            fs.appendFileSync(outputPath, `archive_name=${index.archive.name}\narchive_asset_id=${archive.id}\nchecksum_asset_id=${checksum.id}\n`);
+          ' "$release_dir/snapshot-index.json" "$release_dir/release.json" "$GITHUB_OUTPUT"
+      - name: Download and verify exactly three release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE_NAME: ${{ steps.release.outputs.archive_name }}
+          ARCHIVE_ASSET_ID: ${{ steps.release.outputs.archive_asset_id }}
+          CHECKSUM_ASSET_ID: ${{ steps.release.outputs.checksum_asset_id }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/snapshot"
+          gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$ARCHIVE_ASSET_ID" > "$release_dir/$ARCHIVE_NAME"
+          gh api -H "Accept: application/octet-stream" "/repos/$GITHUB_REPOSITORY/releases/assets/$CHECKSUM_ASSET_ID" > "$release_dir/$ARCHIVE_NAME.sha256"
+          node --input-type=module -e '
+            import crypto from "node:crypto";
+            import fs from "node:fs";
+            import path from "node:path";
+            const [releasePath, directory, archiveName] = process.argv.slice(1);
+            const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+            for (const name of ["snapshot-index.json", archiveName, `${archiveName}.sha256`]) {
+              const asset = release.assets.find((item) => item.name === name);
+              const digest = crypto.createHash("sha256").update(fs.readFileSync(path.join(directory, name))).digest("hex");
+              if (asset.digest !== `sha256:${digest}`) process.exit(4);
+            }
+          ' "$release_dir/release.json" "$release_dir" "$ARCHIVE_NAME"
+      - name: Restore and validate selected snapshot
+        env:
+          ARCHIVE_NAME: ${{ steps.release.outputs.archive_name }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/snapshot"
+          npm run snapshot -- restore \
+            --archive "$release_dir/$ARCHIVE_NAME" \
+            --checksum "$release_dir/$ARCHIVE_NAME.sha256" \
+            --index "$release_dir/snapshot-index.json" \
+            --target-data-dir "$RUNNER_TEMP/data-hub"
+          npm run snapshot -- verify-state --data-dir "$RUNNER_TEMP/data-hub"
+      - name: Publish verified bootstrap draft
+        if: steps.context.outputs.mode == 'publish-bootstrap'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+      - name: Run qualified production sources
+        id: production
+        if: steps.context.outputs.mode == 'refresh'
+        env:
+          DATA_HUB_ALLOW_NETWORK: "1"
+        run: |
+          set -uo pipefail
+          summary_file="$RUNNER_TEMP/production-summary.json"
+          markdown_file="$RUNNER_TEMP/production-summary.md"
+          set +e
+          npm run ingest:production -- \
+            --data-dir "$RUNNER_TEMP/data-hub" \
+            --summary-file "$summary_file" \
+            --markdown-file "$markdown_file" \
+            --code-sha "$GITHUB_SHA"
+          exit_code="$?"
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ -f "$summary_file" ]; then
+            decision="$(node --input-type=module -e 'import fs from "node:fs"; process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).decision)' "$summary_file")"
+            echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Append safe production summary
+        if: always() && steps.context.outputs.mode == 'refresh'
+        run: |
+          if [ -f "$RUNNER_TEMP/production-summary.md" ]; then
+            cat "$RUNNER_TEMP/production-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Encode bounded production summary
+        id: result
+        if: always() && steps.context.outputs.mode == 'refresh'
+        run: |
+          set -euo pipefail
+          summary_file="$RUNNER_TEMP/production-summary.json"
+          if [ ! -f "$summary_file" ]; then
+            echo "summary_b64=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          encoded="$(base64 -w 0 < "$summary_file")"
+          if [ "${#encoded}" -ge 65536 ]; then
+            exit 4
+          fi
+          echo "summary_b64=$encoded" >> "$GITHUB_OUTPUT"
+      - name: Create and publish a unique verified snapshot
+        if: steps.context.outputs.mode == 'refresh' && steps.production.outputs.exit_code == '0' && steps.production.outputs.decision == 'publishable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          output_dir="$RUNNER_TEMP/snapshot-output"
+          npm run snapshot -- create \
+            --data-dir "$RUNNER_TEMP/data-hub" \
+            --output-dir "$output_dir" \
+            --summary-file "$RUNNER_TEMP/production-summary.json" \
+            --previous-tag "$PREVIOUS_TAG"
+          snapshot_id="$(node --input-type=module -e 'import fs from "node:fs"; process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).snapshot_id)' "$output_dir/snapshot-index.json")"
+          archive_name="$(node --input-type=module -e 'import fs from "node:fs"; process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).archive.name)' "$output_dir/snapshot-index.json")"
+          gh api --paginate --slurp "/repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/public-release-pages.json"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const [path, snapshotId] = process.argv.slice(1);
+            const releases = JSON.parse(fs.readFileSync(path, "utf8")).flat();
+            if (releases.some((release) => release.draft === false && (release.body ?? "").includes(`snapshot_id: ${snapshotId}`))) process.exit(4);
+          ' "$RUNNER_TEMP/public-release-pages.json" "$snapshot_id"
+          utc_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          release_tag="data-${utc_stamp}-${snapshot_id:0:12}"
+          gh release create "$release_tag" --repo "$GITHUB_REPOSITORY" --draft --title "$release_tag" --notes "snapshot_id: $snapshot_id"
+          gh release upload "$release_tag" --repo "$GITHUB_REPOSITORY" \
+            "$output_dir/snapshot-index.json" \
+            "$output_dir/$archive_name.sha256" \
+            "$output_dir/$archive_name"
+          gh api "/repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" > "$RUNNER_TEMP/new-release.json"
+          node --input-type=module -e '
+            import crypto from "node:crypto";
+            import fs from "node:fs";
+            import path from "node:path";
+            const [releasePath, directory, archiveName] = process.argv.slice(1);
+            const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+            const names = ["snapshot-index.json", `${archiveName}.sha256`, archiveName];
+            if (release.draft !== true || release.assets.length !== 3) process.exit(4);
+            for (const name of names) {
+              const asset = release.assets.find((item) => item.name === name);
+              if (!asset) process.exit(4);
+              const digest = crypto.createHash("sha256").update(fs.readFileSync(path.join(directory, name))).digest("hex");
+              if (asset.digest !== `sha256:${digest}`) process.exit(4);
+            }
+          ' "$RUNNER_TEMP/new-release.json" "$output_dir" "$archive_name"
+          gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" --draft=false
+      - name: Return terminal production status
+        if: always()
+        run: |
+          case "${{ steps.production.outputs.exit_code }}" in
+            2) exit 2 ;;
+            4|64) exit 4 ;;
+          esac
+          if [ "${{ job.status }}" = "failure" ]; then
+            exit 4
+          fi
+
+  health:
+    if: >-
+      ${{ always() &&
+          github.event.repository.visibility == 'public' &&
+          (github.event_name == 'workflow_dispatch' ||
+           vars.DATA_HUB_PRODUCTION_ENABLED == 'true') }}
+    needs: refresh
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.3
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Reconstruct safe health input
+        id: input
+        env:
+          SUMMARY_B64: ${{ needs.refresh.outputs.summary_b64 }}
+          PRODUCTION_EXIT: ${{ needs.refresh.outputs.production_exit }}
+          REFRESH_RESULT: ${{ needs.refresh.result }}
+        run: |
+          set -euo pipefail
+          summary_file="none"
+          if [ "$REFRESH_RESULT" = "failure" ] && [ "$PRODUCTION_EXIT" != "2" ]; then
+            summary_file="none"
+          elif [ -n "$SUMMARY_B64" ]; then
+            summary_file="$RUNNER_TEMP/production-summary.json"
+            printf '%s' "$SUMMARY_B64" | base64 --decode > "$summary_file"
+          fi
+          echo "summary_file=$summary_file" >> "$GITHUB_OUTPUT"
+      - name: Synchronize GitHub health issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          npm run health:sync -- \
+            --summary-file "${{ steps.input.outputs.summary_file }}" \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-result "${{ needs.refresh.result }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
