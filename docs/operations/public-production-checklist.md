@@ -6,11 +6,11 @@ Cette checklist constitue la preuve synthétique de préparation et d'activation
 
 - [x] Inventaire de tous les fichiers de chaque objet Git atteignable effectué (`git rev-list --objects --all`) : 82 chemins de blobs distincts, plus gros blob de 162 550 octets, aucun export ou binaire métier.
 - [x] Recherche de motifs de secrets effectuée sur tout l'historique : seuls les noms de variables, patrons documentaires et credentials factices des tests ont été relevés.
-- [x] Revue humaine du nouvel historique public achevée : deux commits seulement, aucune ascendance privée, auteurs `noreply`, aucune donnée ERP, société ou personne. Les seules chaînes de credentials sont des fixtures de tests explicitement factices.
+- [x] Revue humaine de l'historique public initial achevée : un commit socle et un commit fonctionnel, aucune ascendance privée, auteurs `noreply`, aucune donnée ERP, société ou personne. Les seules chaînes de credentials sont des fixtures de tests explicitement factices.
 - [x] Dépôt privé source confirmé comme `Faroukoo/shared-data-forecast-hub` ; cible publique autorisée le 2026-08-27 sous `Faroukoo/shared-data-forecast-hub-public`.
 - [x] État Git source propre contrôlé sur `codex/data-hub-free-production` ; les arbres socle et fonctionnel du nouvel historique correspondent byte pour byte aux arbres validés.
 
-Décision de confidentialité : quatre commits de l'archive privée exposent une adresse d'auteur personnelle. Ils ne seront jamais poussés vers la cible publique. Le nouveau dépôt recevra un historique propre, limité à un commit socle et un commit fonctionnel, tous deux attribués à l'adresse GitHub `noreply`. L'archive d'origine reste privée et inchangée.
+Décision de confidentialité : quatre commits de l'archive privée exposent une adresse d'auteur personnelle. Ils ne sont pas présents dans la cible publique. Son historique commence par un commit socle et un commit fonctionnel attribués à l'adresse GitHub `noreply` ; seuls des commits documentaires de preuve peuvent ensuite s'y ajouter. L'archive d'origine reste privée et inchangée.
 
 ## Validation locale
 
@@ -26,9 +26,9 @@ Décision de confidentialité : quatre commits de l'archive privée exposent une
 
 ## GitHub public et intégration
 
-- [ ] Visibilité publique confirmée après l'audit complet.
-- [ ] Pull Request brouillon créée et liée à cette checklist.
-- [ ] CI réussie sur le SHA exact de la branche.
+- [x] Visibilité `PUBLIC` confirmée pour <https://github.com/Faroukoo/shared-data-forecast-hub-public> ; l'archive source reste `PRIVATE`.
+- [x] Pull Request brouillon créée : <https://github.com/Faroukoo/shared-data-forecast-hub-public/pull/1>.
+- [x] CI réussie sur le SHA public `a79a403dec4b816c770e49ef30ac36c845920e68`, run `33059974291`.
 - [ ] Revue finale réussie et commit de fusion exact enregistré.
 - [x] Variable `DATA_HUB_PRODUCTION_ENABLED` absente pendant toute la préparation.
 
