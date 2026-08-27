@@ -106,7 +106,7 @@ Le tag suit :
 
 `consumer-v1-YYYYMMDDTHHMMSSZ-<12-premiers-caractères-du-payload-sha256>`
 
-Une release consommateur référence un seul snapshot source. Elle est immuable après publication. Deux payloads byte-identiques ne créent pas deux releases publiques.
+Une release consommateur référence un seul snapshot source. Son tag, ses notes, ses assets et son payload sont immuables après publication. Une pré-release vérifiée peut uniquement être promue en release stable en basculant son indicateur `prerelease` de `true` à `false` ; aucun autre champ ni fichier ne change. Deux payloads byte-identiques ne créent pas deux releases publiques.
 
 ### 6.2 Assets obligatoires
 
