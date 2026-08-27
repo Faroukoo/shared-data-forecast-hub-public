@@ -9,7 +9,7 @@ import {
   SCHEMA_VERSION,
 } from "@data-hub/contracts";
 
-const SNAPSHOT_ID = "a".repeat(64);
+const SNAPSHOT_ID = "9d3b77bbfc0cf05cbc0f2e27f24cfb0b348ce0e5d71b09267fbd7ce67657e226";
 const SNAPSHOT_TAG = "data-20260827T095123Z-9d3b77bbfc0c";
 
 function observation(
@@ -113,6 +113,28 @@ void test("consumer payload is strict, public and deterministically ordered", ()
   );
 });
 
+void test("consumer payload rejects unknown source fields", () => {
+  const payload = validPayload();
+
+  assert.throws(() =>
+    ConsumerPayloadSchema.parse({
+      ...payload,
+      sources: [{ ...payload.sources[0], unexpected: true }],
+    }),
+  );
+});
+
+void test("consumer payload rejects unknown observation fields", () => {
+  const payload = validPayload();
+
+  assert.throws(() =>
+    ConsumerPayloadSchema.parse({
+      ...payload,
+      observations: [{ ...payload.observations[0], unexpected: true }],
+    }),
+  );
+});
+
 void test("consumer observation order is independent of the host locale", () => {
   const parsed = ConsumerPayloadSchema.parse({
     ...validPayload(),
@@ -182,6 +204,17 @@ void test("consumer payload requires an immutable source snapshot tag", () => {
   );
 });
 
+void test("consumer payload binds the source tag suffix to the snapshot id", () => {
+  assert.throws(
+    () =>
+      ConsumerPayloadSchema.parse({
+        ...validPayload(),
+        source_snapshot_id: "f".repeat(64),
+      }),
+    /source_snapshot_tag_snapshot_mismatch/,
+  );
+});
+
 void test("consumer index is strict and requires one exact payload descriptor", () => {
   const parsed = ConsumerIndexSchema.parse(validIndex());
   assert.equal(parsed.payload.name, "consumer-v1.json");
@@ -199,4 +232,26 @@ void test("consumer index is strict and requires one exact payload descriptor", 
     }),
   );
   assert.throws(() => ConsumerIndexSchema.parse({ ...validIndex(), extra: true }));
+});
+
+void test("consumer index rejects unknown payload descriptor fields", () => {
+  const index = validIndex();
+
+  assert.throws(() =>
+    ConsumerIndexSchema.parse({
+      ...index,
+      payload: { ...index.payload, unexpected: true },
+    }),
+  );
+});
+
+void test("consumer index binds the source tag suffix to the snapshot id", () => {
+  assert.throws(
+    () =>
+      ConsumerIndexSchema.parse({
+        ...validIndex(),
+        source_snapshot_id: "f".repeat(64),
+      }),
+    /source_snapshot_tag_snapshot_mismatch/,
+  );
 });

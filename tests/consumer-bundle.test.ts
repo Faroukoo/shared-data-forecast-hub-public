@@ -28,7 +28,7 @@ import {
   type CreatedConsumerBundle,
 } from "@data-hub/adapters";
 
-const SNAPSHOT_ID = "a".repeat(64);
+const SNAPSHOT_ID = "9d3b77bbfc0cf05cbc0f2e27f24cfb0b348ce0e5d71b09267fbd7ce67657e226";
 const SNAPSHOT_TAG = "data-20260827T095123Z-9d3b77bbfc0c";
 const GENERATED_AT = "2026-08-27T09:51:23.000Z";
 const CODE_SHA = "c".repeat(40);
@@ -186,6 +186,7 @@ void test("detects a corrupted index snapshot identity", async (t) => {
   const { created } = await createBundle(t);
   const corruptedIndex = {
     ...created.index,
+    source_snapshot_tag: "data-20260827T095123Z-dddddddddddd",
     source_snapshot_id: "d".repeat(64),
   };
   await writeFile(created.indexPath, `${canonicalJson(corruptedIndex)}\n`);
@@ -193,6 +194,36 @@ void test("detects a corrupted index snapshot identity", async (t) => {
   await assert.rejects(
     () => verifyConsumerBundle(verificationInput(created)),
     /consumer_snapshot_identity_mismatch/,
+  );
+});
+
+void test("rejects a self-consistent bundle whose tag suffix mismatches its snapshot id", async (t) => {
+  const { created } = await createBundle(t);
+  const invalidSnapshotId = "d".repeat(64);
+  const invalidPayload = {
+    ...payload(),
+    source_snapshot_id: invalidSnapshotId,
+  };
+  const payloadBytes = Buffer.from(`${canonicalJson(invalidPayload)}\n`);
+  const payloadSha256 = sha256Hex(payloadBytes);
+  const invalidIndex = {
+    ...created.index,
+    source_snapshot_id: invalidSnapshotId,
+    payload: {
+      ...created.index.payload,
+      byte_length: payloadBytes.byteLength,
+      sha256: payloadSha256,
+    },
+  };
+  await Promise.all([
+    writeFile(created.payloadPath, payloadBytes),
+    writeFile(created.indexPath, `${canonicalJson(invalidIndex)}\n`),
+    writeFile(created.checksumPath, `${payloadSha256}  consumer-v1.json\n`),
+  ]);
+
+  await assert.rejects(
+    () => verifyConsumerBundle(verificationInput(created)),
+    /invalid_consumer_index/,
   );
 });
 

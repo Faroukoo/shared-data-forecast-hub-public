@@ -237,6 +237,32 @@ void test("rejects a profile missing one exact series and location tuple", () =>
   );
 });
 
+void test("publishes a required tuple with fewer than 24 legitimate monthly observations", () => {
+  const shortSeriesKey = "hcp.ipc2017.0117";
+  const shortLocationKey = "ma:city:tetouan";
+  const rows = completeProfileObservations().filter(
+    (row) =>
+      row.series_key !== shortSeriesKey ||
+      row.location_key !== shortLocationKey ||
+      row.period_start >= "2024-01-01",
+  );
+
+  const payload = projectErpSnackObservations({
+    observations: rows,
+    snapshot: snapshot(),
+    source: HCP_IPC_2017_SOURCE,
+    sourceTag: SOURCE_RELEASE_TAG,
+  });
+  const shortTuple = payload.observations.filter(
+    (row) =>
+      row.series_key === shortSeriesKey &&
+      row.location_key === shortLocationKey,
+  );
+
+  assert.equal(shortTuple.length, 11);
+  assert.equal(payload.observations.length, 14 * 24 + 11);
+});
+
 async function incompleteFixture(t: TestContext): Promise<{
   dataDir: string;
   snapshot: SnapshotIndex;

@@ -116,6 +116,17 @@ export const ConsumerPayloadSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.source_snapshot_tag.slice(-12) !==
+      value.source_snapshot_id.slice(0, 12)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "source_snapshot_tag_snapshot_mismatch",
+        path: ["source_snapshot_tag"],
+      });
+    }
+
     if (!isSortedUnique(value.sources.map((source) => source.source_id))) {
       context.addIssue({
         code: "custom",
@@ -179,6 +190,17 @@ export const ConsumerIndexSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.source_snapshot_tag.slice(-12) !==
+      value.source_snapshot_id.slice(0, 12)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "source_snapshot_tag_snapshot_mismatch",
+        path: ["source_snapshot_tag"],
+      });
+    }
+
     if (!isSortedUnique(value.source_ids)) {
       context.addIssue({
         code: "custom",
