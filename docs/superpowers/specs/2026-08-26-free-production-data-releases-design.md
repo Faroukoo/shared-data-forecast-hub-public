@@ -1,6 +1,6 @@
 # Data Hub — production gratuite par snapshots GitHub
 
-Statut : implémentation prête pour vérification lorsque toutes les validations locales sont réussies ; l’audit public et les activations distantes restent soumis aux barrières décrites ci-dessous, et la production n’est pas encore active.
+Statut : production publique active depuis le 2026-08-27 pour les deux sources HCP qualifiées ; bootstrap, restauration anonyme, idempotence et planification hebdomadaire ont été vérifiés, sans ressource Supabase, Vercel ou serveur facturable.
 
 ## 1. Décision et résultat attendu
 

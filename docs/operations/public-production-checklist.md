@@ -28,23 +28,23 @@ Décision de confidentialité : quatre commits de l'archive privée exposent une
 
 - [x] Visibilité `PUBLIC` confirmée pour <https://github.com/Faroukoo/shared-data-forecast-hub-public> ; l'archive source reste `PRIVATE`.
 - [x] Pull Request brouillon créée : <https://github.com/Faroukoo/shared-data-forecast-hub-public/pull/1>.
-- [x] CI réussie sur le SHA public `a79a403dec4b816c770e49ef30ac36c845920e68`, run `33059974291`.
-- [ ] Revue finale réussie et commit de fusion exact enregistré.
+- [x] CI de préparation réussie sur le SHA public `a9e549473f4292d07f3dcde7a4f74fd0d7d25955`, run `33060088750`.
+- [x] Revue finale sans défaut bloquant, PR #1 fusionnée par squash au SHA exact `f036a04fa21a061113afd135763679c17767e3f5` ; CI `main` réussie sur ce SHA, run `33060355443`.
 - [x] Variable `DATA_HUB_PRODUCTION_ENABLED` absente pendant toute la préparation.
 
 ## Bootstrap et reprise distante
 
-- [ ] Identifiant numérique exact de la release bootstrap brouillon enregistré.
-- [ ] La release bootstrap contient exactement trois assets : index, archive et sidecar SHA-256.
-- [ ] Les trois digests distants correspondent aux fichiers locaux vérifiés.
-- [ ] Publication du brouillon effectuée uniquement par le mode manuel `publish-bootstrap` avec son identifiant exact.
-- [ ] Téléchargement anonyme des trois assets prouvé dans un répertoire temporaire neuf.
-- [ ] Restauration anonyme vers un chemin vide et `verify-state` réussis.
-- [ ] Exécution manuelle `refresh` sans changement prouvée sans création d'une nouvelle release.
+- [x] Release bootstrap brouillon créée sous l'identifiant numérique exact `377715698`, tag `data-20260827T095123Z-9d3b77bbfc0c`, snapshot `9d3b77bbfc0cf05cbc0f2e27f24cfb0b348ce0e5d71b09267fbd7ce67657e226`.
+- [x] La release bootstrap contient exactement trois assets : index, archive et sidecar SHA-256.
+- [x] Les trois digests distants correspondent aux fichiers locaux vérifiés : index `48028a7fd288d32136705a0d3abe0dde438fc931e356a4bd5f0fb81f613173e3`, archive `889fadd8457628b1bc7f24aa4ac2b91de215da12e09b62ae289383c9b50d5b26`, sidecar `e865057b270a48a4109b487b864859d95f7f7220664dd0ab8ee7c56e6658bebc`.
+- [x] Publication du brouillon effectuée uniquement par le mode manuel `publish-bootstrap` avec son identifiant exact ; run réussi `33060492978` sur le SHA fusionné.
+- [x] Téléchargement sans `GITHUB_TOKEN` ni `GH_TOKEN` des trois assets prouvé dans un répertoire temporaire neuf depuis les URLs publiques de la release.
+- [x] Restauration anonyme vers un chemin vide et `verify-state` réussis : deux sources, deux datasets et `contains_confidential_data=false`.
+- [x] Exécution manuelle `refresh` sans changement réussie, run `33060620502` : décision `no_change` pour deux sources et une release publique avant comme après.
 
 ## Activation et coût
 
 - [x] Aucune ressource Supabase ou Vercel n'a été créée pour ce lot.
 - [x] Aucun serveur résident, conteneur, runner auto-hébergé, cache ou artifact Actions n'a été créé pour ce lot ; les conteneurs ERP-Snack préexistants sont restés intacts.
-- [ ] Variable `DATA_HUB_PRODUCTION_ENABLED=true` activée seulement après toutes les preuves précédentes.
-- [ ] Workflow hebdomadaire actif et dernier état de santé des deux sources vérifié.
+- [x] Variable `DATA_HUB_PRODUCTION_ENABLED=true` activée seulement après toutes les preuves précédentes.
+- [x] Workflow `Verified public data refresh` actif, identifiant `343652402`, planifié le lundi à `05:17 Europe/Paris`. Les deux sources HCP sont intègres mais `stale` ; les incidents de fraîcheur restent visibles dans les issues #2 et #3 sans altérer ni republier les valeurs.
