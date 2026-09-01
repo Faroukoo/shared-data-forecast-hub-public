@@ -33,6 +33,20 @@ function semanticEvidence(
   });
 }
 
+function uniqueCandidates(
+  input: ObservationCandidate[],
+): Map<string, ObservationCandidate> {
+  const candidates = new Map<string, ObservationCandidate>();
+  for (const candidate of input) {
+    const existing = candidates.get(candidate.natural_key);
+    if (existing && semanticEvidence(existing) !== semanticEvidence(candidate)) {
+      throw new Error(`conflicting_candidate:${candidate.natural_key}`);
+    }
+    if (!existing) candidates.set(candidate.natural_key, candidate);
+  }
+  return candidates;
+}
+
 function currentPrevious(
   previous: CanonicalObservation[],
 ): Map<string, CanonicalObservation> {
@@ -80,18 +94,29 @@ function createObservation(
   });
 }
 
+export function hasSemanticObservationChanges(input: {
+  candidates: ObservationCandidate[];
+  previous: CanonicalObservation[];
+}): boolean {
+  const candidates = uniqueCandidates(input.candidates);
+  const previous = currentPrevious(input.previous);
+  for (const [naturalKey, candidate] of candidates) {
+    const current = previous.get(naturalKey);
+    if (!current || semanticEvidence(current) !== semanticEvidence(candidate)) {
+      return true;
+    }
+  }
+  for (const naturalKey of previous.keys()) {
+    if (!candidates.has(naturalKey)) return true;
+  }
+  return false;
+}
+
 export function resolveRevisions(
   input: ResolveRevisionsInput,
 ): CanonicalObservation[] {
   const previous = currentPrevious(input.previous);
-  const candidates = new Map<string, ObservationCandidate>();
-  for (const candidate of input.candidates) {
-    const existing = candidates.get(candidate.natural_key);
-    if (existing && semanticEvidence(existing) !== semanticEvidence(candidate)) {
-      throw new Error(`conflicting_candidate:${candidate.natural_key}`);
-    }
-    if (!existing) candidates.set(candidate.natural_key, candidate);
-  }
+  const candidates = uniqueCandidates(input.candidates);
 
   const result: CanonicalObservation[] = [];
   for (const candidate of candidates.values()) {

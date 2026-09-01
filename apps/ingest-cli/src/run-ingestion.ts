@@ -22,13 +22,19 @@ import {
 } from "@data-hub/contracts";
 import {
   findPublishedDatasetByArtifact,
+  hasSemanticObservationChanges,
   publishDataset,
 } from "@data-hub/canonical";
 import {
   discoverCkanResource,
   downloadCkanResource,
+  downloadGoogleSheetsXlsx,
+  googleSheetsExportUrl,
 } from "@data-hub/connectors";
-import { parseHcpIndexWorkbook } from "@data-hub/parsers";
+import {
+  parseHcpIndexWorkbook,
+  parseHcpOfficialIndicatorWorkbook,
+} from "@data-hub/parsers";
 import {
   evaluateQuality,
   type PreviousCoverage,
@@ -61,10 +67,15 @@ function runId(sourceId: string, startedAt: string): string {
 }
 
 function requestTarget(source: SourceDefinition): string | null {
-  if (source.connector.kind !== "ckan") return null;
-  const url = new URL("package_show", source.connector.api_base_url);
-  url.searchParams.set("id", source.connector.dataset_id);
-  return url.toString();
+  if (source.connector.kind === "ckan") {
+    const url = new URL("package_show", source.connector.api_base_url);
+    url.searchParams.set("id", source.connector.dataset_id);
+    return url.toString();
+  }
+  if (source.connector.kind === "google-sheets-xlsx") {
+    return googleSheetsExportUrl(source);
+  }
+  return null;
 }
 
 function retryableFailure(code: string): boolean {
@@ -140,16 +151,16 @@ function terminalRun(input: {
   });
 }
 
-async function latestPublishedObservations(
+async function latestPublishedDataset(
   dataDir: string,
   sourceId: string,
-): Promise<CanonicalObservation[]> {
+): Promise<{ datasetId: string; observations: CanonicalObservation[] } | null> {
   const published = join(dataDir, "published");
   let entries;
   try {
     entries = await readdir(published, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
   let latest: {
@@ -188,7 +199,7 @@ async function latestPublishedObservations(
       });
     }
   }
-  if (!latest) return [];
+  if (!latest) return null;
   try {
     const bytes = await readFile(join(latest.directory, "observations.jsonl"));
     const digest = createHash("sha256").update(bytes).digest("hex");
@@ -199,9 +210,12 @@ async function latestPublishedObservations(
     if (lines.length !== latest.rowCount) {
       throw new Error("published_row_count_mismatch");
     }
-    return lines.map((line) =>
-      CanonicalObservationSchema.parse(JSON.parse(line)),
-    );
+    return {
+      datasetId: latest.datasetId,
+      observations: lines.map((line) =>
+        CanonicalObservationSchema.parse(JSON.parse(line)),
+      ),
+    };
   } catch (error) {
     throw new Error(`invalid_published_dataset:${latest.datasetId}`, {
       cause: error,
@@ -247,17 +261,29 @@ async function finishArtifact(input: {
   timestamp: string;
   runIdentifier: string;
   remoteLastModified?: string | null;
-}): Promise<{ quality: QualityReport; datasetId: string | null }> {
-  const parsed = await parseHcpIndexWorkbook({
-    source: input.source,
-    artifact: input.artifact,
-    bytes: input.bytes,
-    retrievedAt: input.timestamp,
-  });
-  const previous = await latestPublishedObservations(
+}): Promise<{
+  quality: QualityReport;
+  datasetId: string | null;
+  semanticNoChange: boolean;
+}> {
+  const parsed = input.source.parser.kind === "hcp-index-workbook"
+    ? await parseHcpIndexWorkbook({
+        source: input.source,
+        artifact: input.artifact,
+        bytes: input.bytes,
+        retrievedAt: input.timestamp,
+      })
+    : await parseHcpOfficialIndicatorWorkbook({
+        source: input.source,
+        artifact: input.artifact,
+        bytes: input.bytes,
+        retrievedAt: input.timestamp,
+      });
+  const current = await latestPublishedDataset(
     input.dataDir,
     input.source.source_id,
   );
+  const previous = current?.observations ?? [];
   const previousCoverage = coverageFrom(previous);
   const quality = evaluateQuality({
     source: input.source,
@@ -269,7 +295,22 @@ async function finishArtifact(input: {
       : { remoteLastModified: input.remoteLastModified }),
   });
   await persistQuality(input.dataDir, input.runIdentifier, quality);
-  if (quality.status === "quarantined") return { quality, datasetId: null };
+  if (quality.status === "quarantined") {
+    return { quality, datasetId: null, semanticNoChange: false };
+  }
+  if (
+    current &&
+    !hasSemanticObservationChanges({
+      candidates: parsed.observations,
+      previous,
+    })
+  ) {
+    return {
+      quality,
+      datasetId: current.datasetId,
+      semanticNoChange: true,
+    };
+  }
   const dataset = await publishDataset({
     dataRoot: input.dataDir,
     source: input.source,
@@ -279,7 +320,11 @@ async function finishArtifact(input: {
     previous,
     createdAt: input.timestamp,
   });
-  return { quality, datasetId: dataset.dataset_id };
+  return {
+    quality,
+    datasetId: dataset.dataset_id,
+    semanticNoChange: false,
+  };
 }
 
 export async function runRemoteIngestion(
@@ -295,8 +340,19 @@ export async function runRemoteIngestion(
   let artifactSha256: string | null = null;
   try {
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-    const discovery = await discoverCkanResource(source, fetchImpl);
-    const downloaded = await downloadCkanResource(source, discovery, fetchImpl);
+    let downloaded;
+    let remoteLastModified: string | null;
+    if (source.connector.kind === "ckan") {
+      const discovery = await discoverCkanResource(source, fetchImpl);
+      downloaded = await downloadCkanResource(source, discovery, fetchImpl);
+      remoteLastModified =
+        discovery.resource.lastModified ?? discovery.metadataModified;
+    } else if (source.connector.kind === "google-sheets-xlsx") {
+      downloaded = await downloadGoogleSheetsXlsx(source, fetchImpl);
+      remoteLastModified = downloaded.lastModified;
+    } else {
+      throw new Error("remote_ingestion_not_supported:manual");
+    }
     const store = new LocalArtifactStore(options.dataDir);
     const stored = await store.putArtifact({
       source,
@@ -339,8 +395,7 @@ export async function runRemoteIngestion(
       bytes: downloaded.bytes,
       timestamp,
       runIdentifier: id,
-      remoteLastModified:
-        discovery.resource.lastModified ?? discovery.metadataModified,
+      remoteLastModified,
     });
     const run = terminalRun({
       id,
@@ -349,7 +404,11 @@ export async function runRemoteIngestion(
       operatorId: null,
       claimedPublicationPeriod: null,
       timestamp,
-      state: finished.datasetId ? "published" : "quarantined",
+      state: finished.semanticNoChange
+        ? "no_change"
+        : finished.datasetId
+          ? "published"
+          : "quarantined",
       requestTarget: target,
       httpStatus: 200,
       artifactSha256,
@@ -445,7 +504,11 @@ export async function runManualIngestion(
       operatorId: options.operatorId,
       claimedPublicationPeriod: options.claimedPublicationPeriod,
       timestamp,
-      state: finished.datasetId ? "published" : "quarantined",
+      state: finished.semanticNoChange
+        ? "no_change"
+        : finished.datasetId
+          ? "published"
+          : "quarantined",
       requestTarget: null,
       httpStatus: null,
       artifactSha256,
