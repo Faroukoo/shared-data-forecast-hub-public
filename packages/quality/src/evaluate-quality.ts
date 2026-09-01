@@ -290,15 +290,25 @@ export function evaluateQuality(input: EvaluateQualityInput): QualityReport {
     });
   }
   if (freshness && freshness !== "future_period") warningCodes.push(freshness);
-  if (coverageShrank(parsed, input.previousCoverage)) {
-    warningCodes.push("coverage_shrinkage");
-  }
   const previousCoverage = input.previousCoverage;
+  if (coverageShrank(parsed, previousCoverage)) {
+    gates.push({
+      code: "coverage_shrinkage",
+      severity: "mandatory",
+      passed: false,
+      details: {},
+    });
+  }
   if (
     previousCoverage &&
     parsed.observed_labels.some((label) => !previousCoverage.labels.includes(label))
   ) {
-    warningCodes.push("new_label");
+    gates.push({
+      code: "new_label",
+      severity: "mandatory",
+      passed: false,
+      details: {},
+    });
   }
   for (const warning of [...new Set(warningCodes)]) {
     gates.push({

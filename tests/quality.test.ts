@@ -113,7 +113,7 @@ void test("collapses exact duplicates without treating them as a conflict", () =
   assert.equal(report.accepted_observation_count, 1);
 });
 
-void test("warns on coverage shrinkage and a newly observed label", () => {
+void test("quarantines coverage shrinkage instead of accepting a partial replacement", () => {
   const report = evaluateQuality({
     source: HCP_IPC_2017_SOURCE,
     parsed: parsedDataset([
@@ -129,12 +129,32 @@ void test("warns on coverage shrinkage and a newly observed label", () => {
       lastPeriodEnd: "2017-02-28",
       seriesCount: 1,
       locationCount: 1,
+      labels: ["(0113) POISSON ET FRUITS DE MER"],
+    },
+  });
+  assert.equal(report.status, "quarantined");
+  assert.equal(report.failed_gate_codes.includes("coverage_shrinkage"), true);
+  assert.equal(report.warning_codes.includes("coverage_shrinkage"), false);
+  assert.equal(report.accepted_observation_count, 0);
+});
+
+void test("quarantines a newly observed label instead of normalizing it", () => {
+  const report = evaluateQuality({
+    source: HCP_IPC_2017_SOURCE,
+    parsed: parsedDataset(),
+    now: NOW,
+    previousCoverage: {
+      firstPeriodStart: "2017-01-01",
+      lastPeriodEnd: "2017-01-31",
+      seriesCount: 1,
+      locationCount: 1,
       labels: ["ancienne série"],
     },
   });
-  assert.equal(report.status, "accepted_with_warning");
-  assert.equal(report.warning_codes.includes("coverage_shrinkage"), true);
-  assert.equal(report.warning_codes.includes("new_label"), true);
+  assert.equal(report.status, "quarantined");
+  assert.equal(report.failed_gate_codes.includes("new_label"), true);
+  assert.equal(report.warning_codes.includes("new_label"), false);
+  assert.equal(report.accepted_observation_count, 0);
 });
 
 void test("assesses unchanged source freshness without reparsing", () => {

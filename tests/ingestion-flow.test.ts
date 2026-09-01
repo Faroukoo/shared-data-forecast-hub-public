@@ -264,7 +264,7 @@ void test("fails closed when an existing published manifest is corrupt", async (
   assert.deepEqual(await readdir(join(root, "published")), ["corrupt"]);
 });
 
-void test("warns when a new source artifact loses historical coverage", async (t) => {
+void test("quarantines a source artifact that loses historical coverage", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "data-hub-coverage-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await runRemoteIngestion({
@@ -284,10 +284,18 @@ void test("warns when a new source artifact loses historical coverage", async (t
   });
   const report = JSON.parse(
     await readFile(join(root, "quality", `${reduced.run_id}.json`), "utf8"),
-  ) as { warning_codes: string[] };
+  ) as {
+    accepted_observation_count: number;
+    failed_gate_codes: string[];
+    warning_codes: string[];
+  };
 
-  assert.equal(reduced.state, "published");
-  assert.equal(report.warning_codes.includes("coverage_shrinkage"), true);
+  assert.equal(reduced.state, "quarantined");
+  assert.equal(reduced.dataset_id, null);
+  assert.equal(report.failed_gate_codes.includes("coverage_shrinkage"), true);
+  assert.equal(report.warning_codes.includes("coverage_shrinkage"), false);
+  assert.equal(report.accepted_observation_count, 0);
+  assert.equal((await readdir(join(root, "published"))).length, 1);
 });
 
 void test("fails closed when published observations no longer match their checksum", async (t) => {
