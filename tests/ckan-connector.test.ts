@@ -4,10 +4,16 @@ import test from "node:test";
 import {
   discoverCkanResource,
   safeFetch,
+  type SafeFetchHostPolicy,
 } from "@data-hub/connectors";
 import { HCP_IPC_2017_SOURCE } from "@data-hub/source-registry";
 
 const MiB = 1024 * 1024;
+
+const CKAN_HOST_POLICY: SafeFetchHostPolicy = {
+  allowInitial: (url) => ["data.gov.ma", "www.data.gov.ma"].includes(url.hostname),
+  allowRedirect: (url) => ["data.gov.ma", "www.data.gov.ma"].includes(url.hostname),
+};
 
 function ckanResponse(resources: unknown[]): Response {
   return new Response(
@@ -55,16 +61,11 @@ void test("rejects a redirect outside the allowlist", async () => {
     Promise.resolve(
       new Response(null, {
         status: 302,
-        headers: { location: "https://example.invalid/file.xlsx" },
+        headers: { location: "https://evil.data.gov.ma/file.xlsx" },
       }),
     );
   await assert.rejects(
-    () =>
-      safeFetch({
-        url: "https://data.gov.ma/file",
-        fetchImpl,
-        maxBytes: 100,
-      }),
+    () => discoverCkanResource(HCP_IPC_2017_SOURCE, fetchImpl),
     /redirect_host_not_allowed/,
   );
 });
@@ -80,6 +81,7 @@ void test("rejects URL credentials before transport", async () => {
       safeFetch({
         url: "https://user:secret@data.gov.ma/file",
         fetchImpl,
+        hostPolicy: CKAN_HOST_POLICY,
         maxBytes: 100,
       }),
     /url_credentials_not_allowed/,
@@ -97,7 +99,12 @@ void test("rejects a declared artifact above 4 MiB", async () => {
     );
   await assert.rejects(
     () =>
-      safeFetch({ url: "https://data.gov.ma/file", fetchImpl, maxBytes: 4 * MiB }),
+      safeFetch({
+        url: "https://data.gov.ma/file",
+        fetchImpl,
+        hostPolicy: CKAN_HOST_POLICY,
+        maxBytes: 4 * MiB,
+      }),
     /artifact_too_large/,
   );
 });
@@ -108,7 +115,12 @@ void test("rejects streamed bytes above 4 MiB", async () => {
     Promise.resolve(new Response(bytes, { status: 200 }));
   await assert.rejects(
     () =>
-      safeFetch({ url: "https://data.gov.ma/file", fetchImpl, maxBytes: 4 * MiB }),
+      safeFetch({
+        url: "https://data.gov.ma/file",
+        fetchImpl,
+        hostPolicy: CKAN_HOST_POLICY,
+        maxBytes: 4 * MiB,
+      }),
     /artifact_too_large/,
   );
 });
@@ -129,6 +141,7 @@ void test("turns an aborted transport into a timeout code", async () => {
       safeFetch({
         url: "https://data.gov.ma/file",
         fetchImpl,
+        hostPolicy: CKAN_HOST_POLICY,
         maxBytes: 100,
         timeoutMs: 5,
       }),
@@ -164,6 +177,7 @@ void test("times out a stalled response body", async () => {
       safeFetch({
         url: "https://data.gov.ma/file",
         fetchImpl,
+        hostPolicy: CKAN_HOST_POLICY,
         maxBytes: 100,
         timeoutMs: 5,
       }),
@@ -177,6 +191,7 @@ void test("rejects non-2xx status and malformed CKAN JSON", async () => {
       safeFetch({
         url: "https://data.gov.ma/file",
         fetchImpl: () => Promise.resolve(new Response("no", { status: 503 })),
+        hostPolicy: CKAN_HOST_POLICY,
         maxBytes: 100,
       }),
     /http_status:503/,
