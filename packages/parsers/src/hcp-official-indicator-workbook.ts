@@ -10,8 +10,9 @@ import {
   type SourceDefinition,
 } from "@data-hub/contracts";
 
-import { enforceZipLimits, sectorSlug } from "./hcp-index-workbook.js";
+import { sectorSlug } from "./hcp-index-workbook.js";
 import { parseHcpMonthHeader, type HcpMonthPeriod } from "./hcp-period.js";
+import { enforceZipLimits } from "./xlsx-zip-limits.js";
 
 export interface ParseHcpOfficialIndicatorWorkbookInput {
   source: SourceDefinition;
@@ -184,6 +185,10 @@ function plainText(value: ExcelJS.CellValue): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function hasCellContent(value: ExcelJS.CellValue): boolean {
+  return value !== null && value !== undefined && value !== "";
+}
+
 function periodFromString(value: ExcelJS.CellValue): HcpMonthPeriod | null {
   if (typeof value !== "string") return null;
   const match = /^(\d{4})\/(0[1-9]|1[0-2])$/.exec(value);
@@ -262,6 +267,29 @@ function headerLabels(
   return labels;
 }
 
+function fixedLayoutErrors(
+  sheet: ExcelJS.Worksheet,
+  profile: Profile,
+): string[] {
+  const errors: string[] = [];
+  if (plainText(sheet.getCell(profile.headerRow, profile.dateColumn).value) !== "Date") {
+    errors.push("invalid_header:date");
+  }
+  for (let rowNumber = 1; rowNumber <= sheet.rowCount; rowNumber += 1) {
+    const row = sheet.getRow(rowNumber);
+    for (
+      let column = profile.lastValueColumn + 1;
+      column <= row.cellCount;
+      column += 1
+    ) {
+      if (hasCellContent(row.getCell(column).value)) {
+        errors.push(`unexpected_appended_cell:${String(rowNumber)}:${String(column)}`);
+      }
+    }
+  }
+  return errors;
+}
+
 function sourceErrors(input: ParseHcpOfficialIndicatorWorkbookInput): string[] {
   const errors: string[] = [];
   if (input.source.parser.kind !== "hcp-official-indicator-workbook") {
@@ -308,7 +336,7 @@ export async function parseHcpOfficialIndicatorWorkbook(
   const sheet = workbook.worksheets[0];
   if (!sheet) return emptyParsed(input, ["missing_worksheet"], profile.baseYear);
 
-  const parserErrors: string[] = [];
+  const parserErrors = fixedLayoutErrors(sheet, profile);
   const labels = headerLabels(sheet, profile, parserErrors);
   if (parserErrors.length > 0) {
     return emptyParsed(input, [...parserErrors, "empty_observations"], profile.baseYear);

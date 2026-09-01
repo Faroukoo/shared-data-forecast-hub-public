@@ -217,6 +217,49 @@ void test("continues all seven sources but blocks the batch after quarantine", a
   );
 });
 
+for (const failedState of ["failed_retryable", "failed_terminal"] as const) {
+  void test(`continues all seven sources and blocks after ${failedState}`, async () => {
+    const called: string[] = [];
+    const sources = listEnabledSourceDefinitions();
+    const failedSourceId = sources[2]?.source_id ?? assert.fail("missing source");
+    const summary = await runProductionIngestion({
+      dataDir: "/tmp/not-read",
+      codeSha: CODE_SHA,
+      now: FIXED_NOW,
+      sources,
+      runSource: ({ sourceId }) => {
+        called.push(sourceId);
+        return Promise.resolve(
+          ingestionRunFactory({
+            source_id: sourceId,
+            run_id: `run:${sourceId}:${failedState}`,
+            state: sourceId === failedSourceId ? failedState : "no_change",
+          }),
+        );
+      },
+      loadArtifact: (_dataDir, sha256) =>
+        Promise.resolve(rawArtifactFactory({ sha256 })),
+      loadQuality: (_dataDir, runId) => {
+        const sourceId = runId
+          .slice("run:".length)
+          .replace(new RegExp(`:${failedState}$`), "");
+        if (sourceId === failedSourceId) return Promise.resolve(null);
+        return Promise.resolve(
+          qualityFor({ sourceId, artifactSha256: "a".repeat(64) }),
+        );
+      },
+    });
+
+    assert.deepEqual(called, sources.map((source) => source.source_id));
+    assert.equal(summary.sources.length, 7);
+    assert.equal(summary.decision, "blocked");
+    assert.equal(
+      summary.sources.find((result) => result.source_id === failedSourceId)?.state,
+      failedState,
+    );
+  });
+}
+
 void test("publishes only when at least one valid source changed", async () => {
   const summary = await productionRunFixture(["published", "no_change"]);
 
@@ -499,6 +542,46 @@ void test("derives official no-change health from the verified July 2026 period"
     assert.equal(result.health_status, healthStatus);
     assert.deepEqual(result.warning_codes, warningCodes);
   }
+});
+
+void test("blocks exact no-change when the verified period is in the future", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "data-hub-production-future-period-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = listEnabledSourceDefinitions().find(
+    (candidate) => candidate.source_id === "hcp-ipc-2017-official-g1-monthly",
+  ) ?? assert.fail("missing official source");
+  const artifactSha256 = "0".repeat(64);
+  const datasetId = `sha256:${"1".repeat(64)}`;
+  await writePublishedDatasetFixture({
+    root,
+    source,
+    artifactSha256,
+    datasetId,
+    lastPeriodEnd: "2026-09-30",
+    httpLastModified: null,
+  });
+
+  const summary = await runProductionIngestion({
+    dataDir: root,
+    codeSha: CODE_SHA,
+    now: FIXED_NOW,
+    sources: [source],
+    runSource: () =>
+      Promise.resolve(
+        ingestionRunFactory({
+          source_id: source.source_id,
+          run_id: `run:${source.source_id}:future-period`,
+          state: "no_change",
+          artifact_sha256: artifactSha256,
+          dataset_id: datasetId,
+        }),
+      ),
+  });
+
+  const result = summary.sources[0] ?? assert.fail("missing source result");
+  assert.equal(summary.decision, "blocked");
+  assert.equal(result.health_status, "quarantined");
+  assert.deepEqual(result.warning_codes, ["future_period"]);
 });
 
 void test("reports stale health for an unchanged old CKAN artifact", async (t) => {

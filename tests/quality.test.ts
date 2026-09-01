@@ -130,6 +130,10 @@ void test("quarantines coverage shrinkage instead of accepting a partial replace
       seriesCount: 1,
       locationCount: 1,
       labels: ["(0113) POISSON ET FRUITS DE MER"],
+      naturalKeys: [
+        "hcp.ipc2017.0113|ma|2017-01",
+        "hcp.ipc2017.0113|ma|2017-02",
+      ],
     },
   });
   assert.equal(report.status, "quarantined");
@@ -149,6 +153,7 @@ void test("quarantines a newly observed label instead of normalizing it", () => 
       seriesCount: 1,
       locationCount: 1,
       labels: ["ancienne série"],
+      naturalKeys: ["hcp.ipc2017.0113|ma|2017-01"],
     },
   });
   assert.equal(report.status, "quarantined");

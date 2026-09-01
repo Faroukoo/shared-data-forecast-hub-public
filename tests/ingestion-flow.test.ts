@@ -37,6 +37,7 @@ async function repackageOfficialFixture(input: {
   bytes: Uint8Array;
   creator: string;
   firstValue?: number;
+  clearCell?: string;
 }): Promise<Uint8Array> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(Uint8Array.from(input.bytes).buffer);
@@ -45,6 +46,11 @@ async function repackageOfficialFixture(input: {
     const sheet = workbook.worksheets[0];
     if (!sheet) throw new Error("missing_fixture_sheet");
     sheet.getCell(25, 3).value = input.firstValue;
+  }
+  if (input.clearCell !== undefined) {
+    const sheet = workbook.worksheets[0];
+    if (!sheet) throw new Error("missing_fixture_sheet");
+    sheet.getCell(input.clearCell).value = null;
   }
   return new Uint8Array(await workbook.xlsx.writeBuffer());
 }
@@ -295,6 +301,46 @@ void test("quarantines a source artifact that loses historical coverage", async 
   assert.equal(report.failed_gate_codes.includes("coverage_shrinkage"), true);
   assert.equal(report.warning_codes.includes("coverage_shrinkage"), false);
   assert.equal(report.accepted_observation_count, 0);
+  assert.equal((await readdir(join(root, "published"))).length, 1);
+});
+
+void test("quarantines an official artifact that drops an interior natural key", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "data-hub-interior-coverage-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const base = await createHcpOfficialIpcFixture("ipc-2017-official-g1");
+  const firstBytes = await repackageOfficialFixture({
+    bytes: base,
+    creator: "complete-package",
+  });
+  const reducedBytes = await repackageOfficialFixture({
+    bytes: base,
+    creator: "interior-cell-removed",
+    clearCell: "D25",
+  });
+  const fetchImpl = createGoogleSheetsFetchSequence(
+    [firstBytes, reducedBytes],
+    [],
+  );
+  const first = await runRemoteIngestion({
+    sourceId: HCP_IPC_2017_OFFICIAL_G1_SOURCE.source_id,
+    dataDir: root,
+    fetchImpl,
+    now: OFFICIAL_NOW,
+  });
+  const reduced = await runRemoteIngestion({
+    sourceId: HCP_IPC_2017_OFFICIAL_G1_SOURCE.source_id,
+    dataDir: root,
+    fetchImpl,
+    now: "2026-09-01T12:01:00.000Z",
+  });
+  const report = JSON.parse(
+    await readFile(join(root, "quality", `${reduced.run_id}.json`), "utf8"),
+  ) as { failed_gate_codes: string[] };
+
+  assert.equal(first.state, "published");
+  assert.equal(reduced.state, "quarantined");
+  assert.equal(reduced.dataset_id, null);
+  assert.equal(report.failed_gate_codes.includes("coverage_shrinkage"), true);
   assert.equal((await readdir(join(root, "published"))).length, 1);
 });
 

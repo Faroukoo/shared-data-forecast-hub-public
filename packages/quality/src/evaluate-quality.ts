@@ -23,6 +23,7 @@ export interface PreviousCoverage {
   seriesCount: number;
   locationCount: number;
   labels: string[];
+  naturalKeys: string[];
 }
 
 export interface EvaluateQualityInput {
@@ -67,7 +68,14 @@ function coverageShrank(
   parsed: ParsedDataset,
   previous: PreviousCoverage | undefined,
 ): boolean {
-  if (!previous || parsed.observations.length === 0) return false;
+  if (!previous) return false;
+  const currentNaturalKeys = new Set(
+    parsed.observations.map((observation) => observation.natural_key),
+  );
+  if (previous.naturalKeys.some((key) => !currentNaturalKeys.has(key))) {
+    return true;
+  }
+  if (parsed.observations.length === 0) return false;
   const firstObservation = parsed.observations[0];
   if (!firstObservation) return false;
   const first = parsed.observations.reduce(

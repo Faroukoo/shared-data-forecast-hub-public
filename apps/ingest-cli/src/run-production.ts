@@ -200,6 +200,9 @@ function healthFromFreshness(code: FreshnessCode): {
   health: ProductionSourceResult["health_status"];
   warnings: string[];
 } {
+  if (code === "future_period") {
+    return { health: "quarantined", warnings: [code] };
+  }
   if (code === "source_stale") {
     return { health: "stale", warnings: [code] };
   }

@@ -24,6 +24,9 @@ interface HcpOfficialFixtureOptions {
   duplicateLabel?: boolean;
   unknownLabel?: boolean;
   paddedLabel?: boolean;
+  reorderedLabels?: boolean;
+  dateHeader?: string;
+  appendedBusinessColumn?: boolean;
   periods?: readonly (string | Date)[];
   unexpectedString?: boolean;
   emptyValues?: boolean;
@@ -107,11 +110,20 @@ function setOfficialFixtureRows(
   }
   if (options.unknownLabel) fixtureLabels[0] = "Libellé HCP inventé";
   if (options.paddedLabel) fixtureLabels[0] = ` ${fixtureLabels[0] ?? ""} `;
+  if (options.reorderedLabels && fixtureLabels.length > 1) {
+    [fixtureLabels[0], fixtureLabels[1]] = [
+      fixtureLabels[1] ?? "",
+      fixtureLabels[0] ?? "",
+    ];
+  }
 
-  sheet.getCell(headerRow, 2).value = "Date";
+  sheet.getCell(headerRow, 2).value = options.dateHeader ?? "Date";
   fixtureLabels.forEach((label, index) => {
     sheet.getCell(headerRow, index + 3).value = label;
   });
+  if (options.appendedBusinessColumn) {
+    sheet.getCell(headerRow, fixtureLabels.length + 3).value = "Indice appendu";
+  }
   periods.forEach((period, periodIndex) => {
     const row = headerRow + periodIndex + 1;
     sheet.getCell(row, 2).value = period;
@@ -123,6 +135,9 @@ function setOfficialFixtureRows(
           ? "indisponible"
           : 100 + periodIndex + (labelIndex + 5) / 10;
     });
+    if (options.appendedBusinessColumn) {
+      sheet.getCell(row, fixtureLabels.length + 3).value = 999;
+    }
   });
 }
 
@@ -235,6 +250,23 @@ export async function createWorkbookWithLargeZipExpansion(): Promise<Uint8Array>
     sheet.getCell(row, 1).value = `${String(row)}:${compressiblePayload}`;
   }
   return bytes(workbook);
+}
+
+export function forgeZipDeclaredUncompressedSizes(
+  input: Uint8Array,
+  declaredSize = 1,
+): Uint8Array {
+  const forged = Uint8Array.from(input);
+  const buffer = Buffer.from(forged.buffer, forged.byteOffset, forged.byteLength);
+  for (let offset = 0; offset <= buffer.length - 4; offset += 1) {
+    const signature = buffer.readUInt32LE(offset);
+    if (signature === 0x04034b50 && offset + 30 <= buffer.length) {
+      buffer.writeUInt32LE(declaredSize, offset + 22);
+    } else if (signature === 0x02014b50 && offset + 46 <= buffer.length) {
+      buffer.writeUInt32LE(declaredSize, offset + 24);
+    }
+  }
+  return forged;
 }
 
 export function createCkanFetchFixture(workbookBytes: Uint8Array): typeof fetch {

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import ExcelJS from "exceljs";
+
 import {
+  parseHcpIndexWorkbook,
   parseHcpOfficialIndicatorWorkbook,
 } from "@data-hub/parsers";
 import {
@@ -18,6 +21,7 @@ import {
   createHcpOfficialIppiFixture,
   createWorkbookWithLargeZipExpansion,
   createWorkbookWithManyZipEntries,
+  forgeZipDeclaredUncompressedSizes,
   type HcpOfficialIpcProfile,
   type HcpOfficialIppiProfile,
 } from "./fixture-workbooks.js";
@@ -260,6 +264,30 @@ void test("rejects surrounding whitespace in a strict YYYY/MM period", async () 
   assert.deepEqual(parsed.observations, []);
 });
 
+void test("rejects an appended business column after the fixed profile boundary", async () => {
+  const parsed = await parseProfile(profiles[0], { appendedBusinessColumn: true });
+  assert.equal(
+    parsed.parser_errors.some((error) => error.startsWith("unexpected_appended_cell:")),
+    true,
+  );
+  assert.deepEqual(parsed.observations, []);
+});
+
+void test("rejects a changed date header in the fixed official layout", async () => {
+  const parsed = await parseProfile(profiles[0], { dateHeader: "Période" });
+  assert.equal(parsed.parser_errors.includes("invalid_header:date"), true);
+  assert.deepEqual(parsed.observations, []);
+});
+
+void test("rejects reordered labels even when the exact label set is unchanged", async () => {
+  const parsed = await parseProfile(profiles[0], { reorderedLabels: true });
+  assert.equal(
+    parsed.parser_errors.some((error) => error.startsWith("label_position_mismatch:")),
+    true,
+  );
+  assert.deepEqual(parsed.observations, []);
+});
+
 const invalidCases = [
   ["shifted header", { headerRowOffset: 1 }, "invalid_header"],
   ["duplicate label", { duplicateLabel: true }, "duplicate_label"],
@@ -352,4 +380,38 @@ void test("rejects an official XLSX ZIP bomb before loading it", async () => {
       }),
     /xlsx_uncompressed_too_large/,
   );
+});
+
+void test("rejects forged ZIP size metadata from both parsers before ExcelJS load", async (t) => {
+  const actual = await createWorkbookWithLargeZipExpansion();
+  const forged = forgeZipDeclaredUncompressedSizes(actual);
+  const workbook = new ExcelJS.Workbook();
+  const xlsxPrototype = Object.getPrototypeOf(workbook.xlsx) as {
+    load: (...args: unknown[]) => Promise<unknown>;
+  };
+  const load = t.mock.method(xlsxPrototype, "load", () =>
+    Promise.reject(new Error("exceljs_load_called")),
+  );
+
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
+  await assert.rejects(
+    () =>
+      parseHcpIndexWorkbook({
+        source: HCP_IPC_2017_SOURCE,
+        artifact: rawArtifactFactory(),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
+  assert.equal(load.mock.callCount(), 0);
 });

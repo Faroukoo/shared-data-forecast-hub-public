@@ -13,7 +13,7 @@ import {
   listEnabledSourceDefinitions,
 } from "@data-hub/source-registry";
 
-void test("registers only the two qualified monthly HCP sources", () => {
+void test("registers the two legacy CKAN monthly HCP sources", () => {
   assert.deepEqual(
     [HCP_IPC_2017_SOURCE, HCP_IPP_2018_SOURCE].map((source) => [
       source.source_id,

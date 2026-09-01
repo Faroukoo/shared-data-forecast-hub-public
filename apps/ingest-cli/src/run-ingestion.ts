@@ -233,6 +233,7 @@ function coverageFrom(
   const series = new Set<string>();
   const locations = new Set<string>();
   const labels = new Set<string>();
+  const naturalKeys = new Set<string>();
   for (const observation of observations) {
     if (observation.period_start < firstPeriodStart) {
       firstPeriodStart = observation.period_start;
@@ -243,6 +244,7 @@ function coverageFrom(
     series.add(observation.series_key);
     locations.add(observation.location_key);
     labels.add(observation.source_series_label);
+    naturalKeys.add(observation.natural_key);
   }
   return {
     firstPeriodStart,
@@ -250,6 +252,7 @@ function coverageFrom(
     seriesCount: series.size,
     locationCount: locations.size,
     labels: [...labels],
+    naturalKeys: [...naturalKeys].sort(),
   };
 }
 
