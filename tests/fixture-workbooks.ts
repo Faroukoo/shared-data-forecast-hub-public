@@ -10,6 +10,70 @@ interface IpcFixtureOptions {
   includeCasablanca?: boolean;
 }
 
+export type HcpOfficialIpcProfile =
+  | "ipc-2017-official-g1"
+  | "ipc-2017-official-g2";
+
+export type HcpOfficialIppiProfile =
+  | "ippi-2018-official-g1"
+  | "ippi-2018-official-g2"
+  | "ippi-2018-official-g3";
+
+interface HcpOfficialFixtureOptions {
+  headerRowOffset?: number;
+  duplicateLabel?: boolean;
+  unknownLabel?: boolean;
+  periods?: readonly (string | Date)[];
+  unexpectedString?: boolean;
+  emptyValues?: boolean;
+}
+
+const OFFICIAL_IPC_LABELS = {
+  "ipc-2017-official-g1": [
+    "Produits alimentaires et boissons non alcoolisées",
+    "Boissons alcoolisées, tabac et stupéfiants",
+    "Articles d'habillement et chaussures",
+    "Logement, eau, gaz, électricité et autres combustibles",
+    "Meubles, articles de ménage et entretien courant du foyer",
+  ],
+  "ipc-2017-official-g2": [
+    "Transports",
+    "Communications",
+    "Loisirs et culture",
+    "Enseignement",
+    "Restaurants et hôtels",
+  ],
+} as const;
+
+const OFFICIAL_IPPI_LABELS = {
+  "ippi-2018-official-g1": [
+    "Industries alimentaires",
+    "Fabrication de Boissons",
+    "Fabrication de produits à base de tabac",
+    "Fabrication de textiles",
+    "Industrie d'habillement",
+    "Industrie de cuir et de la chaussure",
+    "Travail du bois et fabrication d'articles en bois",
+  ],
+  "ippi-2018-official-g2": [
+    "Imprimerie et reproduction d’enregistrement",
+    "Cokéfaction et raffinage",
+    "Industrie chimique",
+    "Industrie pharmaceutique",
+    "Fabrication de produits en caoutchouc et en plastique",
+    "Fabrication d'autres produits minéraux non métalliques",
+  ],
+  "ippi-2018-official-g3": [
+    "Fabrication de produits métalliques",
+    "Fabrication de produits informatique",
+    "Fabrication d’équipements électriques",
+    "Fabrication de machines et équipements n.c.a",
+    "Industrie automobile",
+    "Fabrication d'autres matériels de transport",
+    "fabrication de meubles",
+  ],
+} as const;
+
 function addMetadata(
   workbook: ExcelJS.Workbook,
   periodicity = "Mensuelle",
@@ -27,6 +91,77 @@ function addMetadata(
 
 async function bytes(workbook: ExcelJS.Workbook): Promise<Uint8Array> {
   return new Uint8Array(await workbook.xlsx.writeBuffer());
+}
+
+function setOfficialFixtureRows(
+  sheet: ExcelJS.Worksheet,
+  headerRow: number,
+  labels: readonly string[],
+  periods: readonly (string | Date)[],
+  options: HcpOfficialFixtureOptions,
+): void {
+  const fixtureLabels = [...labels];
+  if (options.duplicateLabel && fixtureLabels.length > 1) {
+    fixtureLabels[fixtureLabels.length - 1] = fixtureLabels[0] ?? "";
+  }
+  if (options.unknownLabel) fixtureLabels[0] = "Libellé HCP inventé";
+
+  sheet.getCell(headerRow, 2).value = "Date";
+  fixtureLabels.forEach((label, index) => {
+    sheet.getCell(headerRow, index + 3).value = label;
+  });
+  periods.forEach((period, periodIndex) => {
+    const row = headerRow + periodIndex + 1;
+    sheet.getCell(row, 2).value = period;
+    fixtureLabels.forEach((_label, labelIndex) => {
+      if (options.emptyValues) return;
+      const column = labelIndex + 3;
+      sheet.getCell(row, column).value =
+        options.unexpectedString && periodIndex === 0 && labelIndex === 0
+          ? "indisponible"
+          : 100 + periodIndex + (labelIndex + 5) / 10;
+    });
+  });
+}
+
+export async function createHcpOfficialIpcFixture(
+  profile: HcpOfficialIpcProfile,
+  options: HcpOfficialFixtureOptions = {},
+): Promise<Uint8Array> {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("IPC");
+  const headerRow = 24 + (options.headerRowOffset ?? 0);
+  setOfficialFixtureRows(
+    sheet,
+    headerRow,
+    OFFICIAL_IPC_LABELS[profile],
+    options.periods ?? ["2026/07", "2026/08"],
+    options,
+  );
+  return bytes(workbook);
+}
+
+export async function createHcpOfficialIppiFixture(
+  profile: HcpOfficialIppiProfile,
+  options: HcpOfficialFixtureOptions = {},
+): Promise<Uint8Array> {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("IPPI");
+  const headerRow = 22 + (options.headerRowOffset ?? 0);
+  setOfficialFixtureRows(
+    sheet,
+    headerRow,
+    OFFICIAL_IPPI_LABELS[profile],
+    options.periods ?? [
+      new Date(Date.UTC(2026, 6, 1)),
+      new Date(Date.UTC(2026, 7, 1)),
+    ],
+    options,
+  );
+  if (profile === "ippi-2018-official-g2" && !options.emptyValues) {
+    sheet.getCell(headerRow + 1, 4).value = "-";
+  }
+  return bytes(workbook);
 }
 
 export async function createIpcFixture(

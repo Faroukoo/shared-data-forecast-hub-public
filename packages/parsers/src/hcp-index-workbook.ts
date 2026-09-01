@@ -103,7 +103,7 @@ function scalarFromCell(
   }
 }
 
-function sectorSlug(label: string): string {
+export function sectorSlug(label: string): string {
   return label
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
