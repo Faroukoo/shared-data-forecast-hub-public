@@ -35,6 +35,23 @@ void test("keeps period evidence out of production and snapshot source contracts
   );
 });
 
+void test("accepts a bounded terminal result for invalid source evidence", () => {
+  const parsed = ProductionSourceResultSchema.parse({
+    source_id: "hcp-ipc-2017-monthly",
+    run_id: "run:hcp-ipc-2017-monthly:evidence-failure",
+    state: "failed_terminal",
+    artifact_sha256: null,
+    dataset_id: null,
+    health_status: null,
+    warning_codes: [],
+    failure_code: "invalid_source_evidence",
+  });
+
+  assert.equal(parsed.state, "failed_terminal");
+  assert.equal(parsed.failure_code, "invalid_source_evidence");
+  assert.equal("last_period_end" in parsed, false);
+});
+
 void test("accepts a publishable production summary", () => {
   const parsed = ProductionRunSummarySchema.parse({
     schema_version: SCHEMA_VERSION,

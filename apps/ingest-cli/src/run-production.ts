@@ -58,6 +58,17 @@ const BLOCKING_STATES = new Set<IngestionRun["state"]>([
   "failed_retryable",
   "failed_terminal",
 ]);
+const BLOCKING_HEALTH_STATUSES = new Set<
+  Exclude<ProductionSourceResult["health_status"], null>
+>(["schema_changed", "quarantined", "disabled", "licence_blocked"]);
+
+function isBlockingResult(result: ProductionSourceResult): boolean {
+  return (
+    BLOCKING_STATES.has(result.state) ||
+    (result.health_status !== null &&
+      BLOCKING_HEALTH_STATUSES.has(result.health_status))
+  );
+}
 
 async function loadArtifactFromDisk(
   dataDir: string,
@@ -280,6 +291,9 @@ async function summarizeRun(input: {
       input.source.source_id,
       input.run.dataset_id,
     );
+    if (!manifest.artifact_sha256s.includes(input.run.artifact_sha256)) {
+      throw new Error(`dataset_artifact_mismatch:${input.run.run_id}`);
+    }
     const compatibleReport = await loadLatestCompatibleQualityFromDisk(
       input.dataDir,
       manifest,
@@ -344,6 +358,22 @@ async function summarizeRun(input: {
   };
 }
 
+function evidenceFailureResult(input: {
+  source: SourceDefinition;
+  run: IngestionRun;
+}): ProductionSourceResult {
+  return {
+    source_id: input.source.source_id,
+    run_id: input.run.run_id,
+    state: "failed_terminal",
+    artifact_sha256: null,
+    dataset_id: null,
+    health_status: null,
+    warning_codes: [],
+    failure_code: "invalid_source_evidence",
+  };
+}
+
 export async function runProductionIngestion(
   options: RunProductionOptions,
 ): Promise<ProductionRunSummary> {
@@ -362,19 +392,23 @@ export async function runProductionIngestion(
       dataDir: options.dataDir,
       now: timestamp,
     });
-    results.push(
-      await summarizeRun({
-        dataDir: options.dataDir,
-        now: timestamp,
-        source,
-        run,
-        loadArtifact,
-        loadQuality,
-      }),
-    );
+    try {
+      results.push(
+        await summarizeRun({
+          dataDir: options.dataDir,
+          now: timestamp,
+          source,
+          run,
+          loadArtifact,
+          loadQuality,
+        }),
+      );
+    } catch {
+      results.push(evidenceFailureResult({ source, run }));
+    }
   }
 
-  const decision = results.some((result) => BLOCKING_STATES.has(result.state))
+  const decision = results.some(isBlockingResult)
     ? "blocked"
     : results.some((result) => result.state === "published")
       ? "publishable"
@@ -407,7 +441,7 @@ export function renderProductionMarkdown(
     `- Decision: ${validated.decision}`,
     `- Sources: ${String(validated.sources.length)}`,
     `- Published: ${String(validated.sources.filter((source) => source.state === "published").length)}`,
-    `- Blocked: ${String(validated.sources.filter((source) => BLOCKING_STATES.has(source.state)).length)}`,
+    `- Blocked: ${String(validated.sources.filter(isBlockingResult).length)}`,
     "",
     "| Source | State | Health | Warnings | Failure |",
     "| --- | --- | --- | --- | --- |",
