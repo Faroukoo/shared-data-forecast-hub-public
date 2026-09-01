@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ProductionSourceResultSchema,
   ProductionRunSummarySchema,
   SCHEMA_VERSION,
   SnapshotIndexSchema,
@@ -20,6 +21,19 @@ function sourceResult(sourceId: string) {
     failure_code: null,
   };
 }
+
+void test("keeps period evidence out of production and snapshot source contracts", () => {
+  const parsed = ProductionSourceResultSchema.parse(
+    sourceResult("hcp-ipc-2017-official-g1-monthly"),
+  );
+  assert.equal("last_period_end" in parsed, false);
+  assert.throws(() =>
+    ProductionSourceResultSchema.parse({
+      ...sourceResult("hcp-ipc-2017-official-g1-monthly"),
+      last_period_end: "2026-07-31",
+    }),
+  );
+});
 
 void test("accepts a publishable production summary", () => {
   const parsed = ProductionRunSummarySchema.parse({
