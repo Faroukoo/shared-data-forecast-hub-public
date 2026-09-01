@@ -62,7 +62,7 @@ Les ressources CKAN observées portent une dernière modification fournisseur du
 
 La publication est bloquée si la source est désactivée ou candidate, si la licence ne permet plus l'usage dérivé interne, si le parseur détecte une dérive de schéma, si aucune observation n'est produite, si une clé naturelle porte deux valeurs différentes, si l'unité ou l'année de base est incohérente, si un lieu est inconnu ou si un scalaire n'est pas reproductible.
 
-Les marqueurs manquants, la source tardive ou périmée, le recul de couverture et un nouveau libellé créent des avertissements explicites. Aucun score numérique ne peut annuler l'échec d'une barrière obligatoire.
+Les seuls avertissements sont les marqueurs manquants et la source `source_late` ou `source_stale`. Un nouveau libellé ou un recul de couverture est une barrière fail-closed : le run est mis en quarantaine et la décision de production reste bloquée jusqu'à une correction revue. Aucun score numérique ne peut annuler l'échec d'une barrière obligatoire.
 
 ## Sources non qualifiées
 
