@@ -213,6 +213,17 @@ void test("rejects missing, invalid and future published periods", () => {
   );
 });
 
+void test("rejects a non-leap-year now date instead of normalizing it", () => {
+  assert.equal(
+    assessPeriodFreshness({
+      source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+      now: "2026-02-29T12:00:00.000Z",
+      lastPeriodEnd: "2026-02-28",
+    }),
+    "invalid_period_timestamp",
+  );
+});
+
 void test("routes official sheets through their published period instead of HTTP metadata", () => {
   const report = evaluateQuality({
     source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,

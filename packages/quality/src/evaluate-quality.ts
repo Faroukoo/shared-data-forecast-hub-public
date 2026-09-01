@@ -129,6 +129,33 @@ function parseUtcCalendarDate(value: string): number | null {
   return new Date(timestamp).toISOString().slice(0, 10) === value ? timestamp : null;
 }
 
+function parseUtcTimestamp(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, fraction = ""] = match;
+  const milliseconds = Number(fraction.padEnd(3, "0"));
+  const timestamp = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    milliseconds,
+  );
+  const date = new Date(timestamp);
+  return Number.isFinite(timestamp) &&
+      date.getUTCFullYear() === Number(year) &&
+      date.getUTCMonth() === Number(month) - 1 &&
+      date.getUTCDate() === Number(day) &&
+      date.getUTCHours() === Number(hour) &&
+      date.getUTCMinutes() === Number(minute) &&
+      date.getUTCSeconds() === Number(second) &&
+      date.getUTCMilliseconds() === milliseconds
+    ? timestamp
+    : null;
+}
+
 function utcCalendarDay(timestamp: number): number {
   const date = new Date(timestamp);
   return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
@@ -136,9 +163,9 @@ function utcCalendarDay(timestamp: number): number {
 
 export function assessPeriodFreshness(input: AssessPeriodFreshnessInput): FreshnessCode {
   if (!input.lastPeriodEnd) return null;
-  const nowMs = Date.parse(input.now);
+  const nowMs = parseUtcTimestamp(input.now);
   const periodEndMs = parseUtcCalendarDate(input.lastPeriodEnd);
-  if (!Number.isFinite(nowMs) || periodEndMs === null) {
+  if (nowMs === null || periodEndMs === null) {
     return "invalid_period_timestamp";
   }
   const ageDays = (utcCalendarDay(nowMs) - periodEndMs) / 86_400_000;
