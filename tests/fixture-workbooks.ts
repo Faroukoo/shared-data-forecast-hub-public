@@ -23,6 +23,7 @@ interface HcpOfficialFixtureOptions {
   headerRowOffset?: number;
   duplicateLabel?: boolean;
   unknownLabel?: boolean;
+  paddedLabel?: boolean;
   periods?: readonly (string | Date)[];
   unexpectedString?: boolean;
   emptyValues?: boolean;
@@ -105,6 +106,7 @@ function setOfficialFixtureRows(
     fixtureLabels[fixtureLabels.length - 1] = fixtureLabels[0] ?? "";
   }
   if (options.unknownLabel) fixtureLabels[0] = "Libellé HCP inventé";
+  if (options.paddedLabel) fixtureLabels[0] = ` ${fixtureLabels[0] ?? ""} `;
 
   sheet.getCell(headerRow, 2).value = "Date";
   fixtureLabels.forEach((label, index) => {
@@ -221,6 +223,16 @@ export async function createWorkbookWithManyZipEntries(): Promise<Uint8Array> {
   const workbook = new ExcelJS.Workbook();
   for (let index = 0; index < 260; index += 1) {
     workbook.addWorksheet(`S${String(index)}`).getCell("A1").value = index;
+  }
+  return bytes(workbook);
+}
+
+export async function createWorkbookWithLargeZipExpansion(): Promise<Uint8Array> {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Expanded");
+  const compressiblePayload = "x".repeat(32_700);
+  for (let row = 1; row <= 1_030; row += 1) {
+    sheet.getCell(row, 1).value = `${String(row)}:${compressiblePayload}`;
   }
   return bytes(workbook);
 }

@@ -112,7 +112,7 @@ export function sectorSlug(label: string): string {
     .replace(/^-|-$/g, "");
 }
 
-async function enforceZipLimits(input: ParseHcpWorkbookInput): Promise<void> {
+export async function enforceZipLimits(input: ParseHcpWorkbookInput): Promise<void> {
   if (input.bytes.byteLength > MAX_WORKBOOK_BYTES) throw new Error("workbook_too_large");
   let directory: unzipper.CentralDirectory;
   try {

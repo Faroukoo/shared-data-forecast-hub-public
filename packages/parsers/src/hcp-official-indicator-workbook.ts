@@ -10,7 +10,7 @@ import {
   type SourceDefinition,
 } from "@data-hub/contracts";
 
-import { sectorSlug } from "./hcp-index-workbook.js";
+import { enforceZipLimits, sectorSlug } from "./hcp-index-workbook.js";
 import { parseHcpMonthHeader, type HcpMonthPeriod } from "./hcp-period.js";
 
 export interface ParseHcpOfficialIndicatorWorkbookInput {
@@ -181,12 +181,12 @@ function emptyParsed(
 }
 
 function plainText(value: ExcelJS.CellValue): string | null {
-  return typeof value === "string" ? value.trim() : null;
+  return typeof value === "string" ? value : null;
 }
 
 function periodFromString(value: ExcelJS.CellValue): HcpMonthPeriod | null {
   if (typeof value !== "string") return null;
-  const match = /^(\d{4})\/(0[1-9]|1[0-2])$/.exec(value.trim());
+  const match = /^(\d{4})\/(0[1-9]|1[0-2])$/.exec(value);
   if (!match) return null;
   const month = Number(match[2]);
   const token = MONTH_TOKENS[month - 1];
@@ -298,6 +298,7 @@ export async function parseHcpOfficialIndicatorWorkbook(
   }
   const profile = PROFILES[profileName];
 
+  await enforceZipLimits(input);
   const workbook = new ExcelJS.Workbook();
   try {
     await workbook.xlsx.load(Uint8Array.from(input.bytes).buffer);

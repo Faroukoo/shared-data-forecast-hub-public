@@ -16,6 +16,8 @@ import {
 import {
   createHcpOfficialIpcFixture,
   createHcpOfficialIppiFixture,
+  createWorkbookWithLargeZipExpansion,
+  createWorkbookWithManyZipEntries,
   type HcpOfficialIpcProfile,
   type HcpOfficialIppiProfile,
 } from "./fixture-workbooks.js";
@@ -243,6 +245,21 @@ void test("normalizes IPPI Excel dates and omits only the refining dash", async 
   );
 });
 
+void test("rejects a padded label instead of normalizing published provenance", async () => {
+  const parsed = await parseProfile(profiles[1], { paddedLabel: true });
+  assert.equal(
+    parsed.parser_errors.some((error) => error.startsWith("unknown_label:")),
+    true,
+  );
+  assert.deepEqual(parsed.observations, []);
+});
+
+void test("rejects surrounding whitespace in a strict YYYY/MM period", async () => {
+  const parsed = await parseProfile(profiles[0], { periods: [" 2026/07 "] });
+  assert.equal(parsed.parser_errors.includes("invalid_period:25"), true);
+  assert.deepEqual(parsed.observations, []);
+});
+
 const invalidCases = [
   ["shifted header", { headerRowOffset: 1 }, "invalid_header"],
   ["duplicate label", { duplicateLabel: true }, "duplicate_label"],
@@ -293,4 +310,46 @@ void test("fails closed for a non-official source and mismatched artifact metada
   assert.equal(mismatchedArtifact.parser_errors.includes("artifact_source_mismatch"), true);
   assert.equal(mismatchedArtifact.parser_errors.includes("artifact_parser_mismatch"), true);
   assert.deepEqual(mismatchedArtifact.observations, []);
+});
+
+void test("rejects an official workbook above the byte limit before loading it", async () => {
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes: new Uint8Array(4 * 1024 * 1024 + 1),
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /workbook_too_large/,
+  );
+});
+
+void test("rejects an official XLSX with too many ZIP entries before loading it", async () => {
+  const bytes = await createWorkbookWithManyZipEntries();
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_too_many_entries/,
+  );
+});
+
+void test("rejects an official XLSX ZIP bomb before loading it", async () => {
+  const bytes = await createWorkbookWithLargeZipExpansion();
+  assert.equal(bytes.byteLength < 4 * 1024 * 1024, true);
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
 });
