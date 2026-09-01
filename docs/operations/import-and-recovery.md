@@ -4,7 +4,7 @@
 
 Utiliser Node `22.22.x` et npm `11.15.x`. Les commandes normales sont hors ligne ; un accès distant n'est permis que lorsque `DATA_HUB_ALLOW_NETWORK=1` est présent. Toutes les sorties d'exécution sont écrites sous `.data-hub/`, répertoire ignoré par Git.
 
-L'exécutable reste ponctuel et n'installe ni démon, ni cron local. En production, le workflow GitHub gardé restaure le dernier snapshot public valide, exécute les deux sources séquentiellement puis publie une nouvelle release seulement lorsqu'au moins une source a changé et que toutes les barrières sont franchies. La planification hebdomadaire reste inerte tant que le dépôt n'est pas public et que la variable `DATA_HUB_PRODUCTION_ENABLED` ne vaut pas exactement `true`.
+L'exécutable reste ponctuel et n'installe ni démon, ni cron local. En production, le workflow GitHub gardé restaure le dernier snapshot public valide, exécute séquentiellement une unique commande sur le registre de toutes les sources activées et qualifiées, puis publie une nouvelle release seulement lorsqu'au moins une source a changé et que toutes les barrières sont franchies. La cadence hebdomadaire (lundi 05:17 Europe/Paris) reste inerte tant que le dépôt n'est pas public et que la variable `DATA_HUB_PRODUCTION_ENABLED` ne vaut pas exactement `true`. La concurrence conserve `cancel-in-progress: false` : aucun run en cours n'est annulé.
 
 ## Contrôle sans téléchargement
 
@@ -22,7 +22,7 @@ DATA_HUB_ALLOW_NETWORK=1 npm run ingest -- --source hcp-ipc-2017-monthly
 DATA_HUB_ALLOW_NETWORK=1 npm run ingest -- --source hcp-ipp-2018-monthly
 ```
 
-Le premier passage valide doit retourner `published` ou `quarantined`. Répéter exactement la même commande : si les octets n'ont pas changé et que la publication précédente est complète, l'état doit être `no_change`, avec le même SHA-256 d'artefact et le même identifiant de dataset.
+Le premier passage valide doit retourner `published` ou `quarantined`. Répéter exactement la même commande : pour CKAN, si les octets n'ont pas changé et que la publication précédente est complète, l'état doit être `no_change`, avec le même SHA-256 d'artefact et le même identifiant de dataset. Pour les feuilles officielles, des octets XLSX différents mais des observations sémantiquement identiques retournent aussi `no_change` après archivage, parsing et qualité ; le run référence le dataset courant sans publier de dataset ni de snapshot supplémentaires.
 
 L'ordre du flux est fixe : découverte, téléchargement borné, archive immuable, recherche d'une publication complète, parsing, qualité, publication atomique et écriture du run terminal. Une interruption après archivage mais avant publication est reprise automatiquement au prochain lancement ; l'existence du seul artefact brut ne produit jamais `no_change`.
 
@@ -36,7 +36,7 @@ DATA_HUB_ALLOW_NETWORK=1 npm run ingest:production -- \
   --code-sha "$(git rev-parse HEAD)"
 ```
 
-Cette commande tente toutes les sources activées dans leur ordre stable, mais la décision globale devient `blocked` dès qu'une source échoue ou est mise en quarantaine. Une source en retard ou périmée reste visible sans modifier les valeurs officielles. Le workflow utilise les mêmes contrats et écrit ses fichiers intermédiaires dans le répertoire temporaire du runner.
+Cette commande unique tente toutes les sources activées dans leur ordre stable : les deux CKAN historiques et les cinq feuilles officielles HCP. Elle ne reçoit pas une liste manuelle de deux sources. La décision globale devient `blocked` dès qu'une source échoue ou est mise en quarantaine. Une source en retard ou périmée reste visible sans modifier les valeurs officielles. Le workflow utilise les mêmes contrats et écrit ses fichiers intermédiaires dans le répertoire temporaire du runner ; il n'utilise ni cache, ni artefact GitHub Actions, ni Supabase, ni Vercel.
 
 ## Import manuel contrôlé
 
@@ -60,17 +60,28 @@ Procédure :
 
 1. conserver l'artefact et le run sans les modifier ;
 2. relever les codes de barrière ou de parseur ;
-3. vérifier le dataset CKAN, la licence et la structure du classeur auprès de la source officielle ;
-4. corriger le connecteur ou le profil uniquement après qualification d'un changement réel ;
+3. vérifier le dataset CKAN ou la page indicateur HCP, la licence et la structure du classeur auprès de la source officielle ;
+4. corriger le connecteur, le registre ou le profil uniquement après qualification d'un changement réel ;
 5. relancer la commande normale. Le digest existant sera réutilisé sans écrasement.
 
-Une quarantaine n'autorise ni suppression de preuve, ni publication forcée, ni remplacement manuel du manifeste.
+Une quarantaine n'autorise ni suppression de preuve, ni publication forcée, ni remplacement manuel du manifeste. Une nouvelle étiquette, même seulement réécrite ou accentuée différemment, n'est jamais normalisée par un opérateur : elle exige une évolution revue du registre/parseur et de ses tests.
 
 ## Retard, panne fournisseur et fréquence manuelle
 
 Interroger au maximum tous les 7 jours pour ces séries mensuelles. Après 60 jours sans nouvelle métadonnée, traiter `source_late` comme une alerte opérateur. Après 120 jours, `source_stale` doit rester visible dans les dashboards consommateurs.
 
-Si le portail est indisponible, ne pas multiplier les tentatives ni utiliser automatiquement un miroir non officiel. Après vérification humaine, un fichier officiel reçu par un canal fiable peut être importé manuellement une fois ; le lancement distant hebdomadaire reprend ensuite. Chaque nouveau fichier manuel doit être contrôlé séparément et conserver son SHA-256.
+Si le portail est indisponible, ne pas multiplier les tentatives ni utiliser automatiquement un miroir non officiel. Après vérification humaine, un fichier officiel reçu par un canal fiable peut être importé manuellement une fois ; le lancement distant hebdomadaire reprend ensuite. Chaque nouveau fichier manuel doit être contrôlé séparément et conserver son SHA-256. Pour une feuille officielle, une redirection refusée reste une alerte de transport : conserver le run, vérifier que l'URL part de `docs.google.com` et qu'elle ne redirige que vers `*.sheets.googleusercontent.com`, puis faire revoir le connecteur si le fournisseur a réellement changé de domaine.
+
+## Réactions opérateur aux preuves HCP
+
+| Signal | Réaction obligatoire |
+| --- | --- |
+| Redirection, signature XLSX ou limite de téléchargement refusée | Conserver le run et l'artefact éventuel ; ne pas élargir les hôtes, redirections, délai ou taille. Vérifier la page officielle, puis faire revoir le connecteur si le changement est confirmé. |
+| En-tête, ordre de colonnes, période ou libellé inattendu | Laisser le run en quarantaine. Ne jamais corriger ou normaliser la feuille ; soumettre une modification revue du registre/parseur avec tests. |
+| Licence absente, modifiée ou incompatible | Bloquer la publication et toute redistribution de la source concernée ; conserver les preuves et demander une nouvelle qualification humaine. Ne pas appliquer par défaut le régime ODbL des CKAN aux feuilles CC BY 4.0, ni l'inverse. |
+| `source_late` ou `source_stale` | Conserver la dernière période et les valeurs officielles sans les réécrire. Vérifier la publication HCP ; la fraîcheur des feuilles vient de `period_end`, avec alerte après 60 jours et état périmé après 120 jours. |
+
+Au 2026-09-01, la dernière période vérifiée dans chaque feuille officielle est juillet 2026. Les deux CKAN restent des preuves historiques avec dernière modification fournisseur observée le 2025-02-06.
 
 ## Sauvegarde, vérification et restauration
 
@@ -100,7 +111,7 @@ L'opérateur obtient toujours le basename exact depuis `snapshot-index.json`. L'
 
 1. Ne jamais modifier ni supprimer la dernière release valide.
 2. Identifier le run et le rapport qualité en échec ; conserver le code d'incident et la provenance sans copier de donnée sensible dans une issue publique.
-3. Si le fournisseur est indisponible ou si le schéma a changé, laisser l'exécution échouer fermée ; ne pas substituer automatiquement une autre source.
+3. Si le fournisseur est indisponible, si une redirection est refusée, si la licence change ou si le schéma/libellé a changé, laisser l'exécution échouer fermée ; ne pas substituer automatiquement une autre source ni normaliser une étiquette.
 4. Télécharger anonymement la dernière release publique et effectuer la restauration ci-dessus dans un répertoire temporaire neuf.
 5. Corriger le connecteur par tests, puis lancer manuellement le mode `restore-drill` avant un nouveau `refresh`.
 6. Réactiver la planification uniquement après validation de l'état et résolution de l'incident de santé.
