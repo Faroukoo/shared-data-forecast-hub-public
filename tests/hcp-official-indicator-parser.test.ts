@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import test from "node:test";
 
 import ExcelJS from "exceljs";
+import * as unzipper from "unzipper";
 
 import {
   parseHcpIndexWorkbook,
@@ -22,12 +24,27 @@ import {
   createWorkbookWithLargeZipExpansion,
   createWorkbookWithManyZipEntries,
   forgeZipDeclaredUncompressedSizes,
+  forgeZipEndOfCentralDirectoryEntryCounts,
   type HcpOfficialIpcProfile,
   type HcpOfficialIppiProfile,
 } from "./fixture-workbooks.js";
 import { rawArtifactFactory } from "./test-factories.js";
 
 const RETRIEVED_AT = "2026-08-26T12:00:00.000Z";
+
+async function countLocalZipEntries(bytes: Uint8Array): Promise<number> {
+  const parser = unzipper.Parse({ forceStream: true });
+  Readable.from([Buffer.from(bytes)]).pipe(parser);
+  let count = 0;
+  for await (const value of parser) {
+    count += 1;
+    for await (const chunk of value as unzipper.Entry) {
+      // Consume sequentially so Parse can reach every following local header.
+      void chunk;
+    }
+  }
+  return count;
+}
 
 const profiles = [
   {
@@ -288,6 +305,70 @@ void test("rejects reordered labels even when the exact label set is unchanged",
   assert.deepEqual(parsed.observations, []);
 });
 
+void test("rejects one sparse appended cell without dense row access", async (t) => {
+  const sparseRow = 20_000;
+  const bytes = await createHcpOfficialIpcFixture("ipc-2017-official-g1", {
+    sparseAppendedBusinessRow: sparseRow,
+  });
+  const probeWorkbook = new ExcelJS.Workbook();
+  const worksheetPrototype = Object.getPrototypeOf(
+    probeWorkbook.addWorksheet("Probe"),
+  ) as { getRow: (rowNumber: number) => ExcelJS.Row };
+  const originalGetRow = worksheetPrototype.getRow;
+  const getRow = t.mock.method(
+    worksheetPrototype,
+    "getRow",
+    function (this: ExcelJS.Worksheet, rowNumber: number) {
+      return originalGetRow.call(this, rowNumber);
+    },
+  );
+
+  const parsed = await parseHcpOfficialIndicatorWorkbook({
+    source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+    artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+    bytes,
+    retrievedAt: RETRIEVED_AT,
+  });
+
+  assert.deepEqual(
+    parsed.parser_errors.filter((error) =>
+      error.startsWith("unexpected_appended_cell:"),
+    ),
+    [`unexpected_appended_cell:${String(sparseRow)}:8`],
+  );
+  assert.deepEqual(parsed.observations, []);
+  assert.equal(getRow.mock.callCount() < 100, true);
+});
+
+void test("accepts a sparse styled empty cell without dense row access", async (t) => {
+  const bytes = await createHcpOfficialIpcFixture("ipc-2017-official-g1", {
+    sparseStyledEmptyRow: 20_000,
+  });
+  const probeWorkbook = new ExcelJS.Workbook();
+  const worksheetPrototype = Object.getPrototypeOf(
+    probeWorkbook.addWorksheet("Probe"),
+  ) as { getRow: (rowNumber: number) => ExcelJS.Row };
+  const originalGetRow = worksheetPrototype.getRow;
+  const getRow = t.mock.method(
+    worksheetPrototype,
+    "getRow",
+    function (this: ExcelJS.Worksheet, rowNumber: number) {
+      return originalGetRow.call(this, rowNumber);
+    },
+  );
+
+  const parsed = await parseHcpOfficialIndicatorWorkbook({
+    source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+    artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+    bytes,
+    retrievedAt: RETRIEVED_AT,
+  });
+
+  assert.deepEqual(parsed.parser_errors, []);
+  assert.equal(parsed.observations.length, 10);
+  assert.equal(getRow.mock.callCount() < 100, true);
+});
+
 const invalidCases = [
   ["shifted header", { headerRowOffset: 1 }, "invalid_header"],
   ["duplicate label", { duplicateLabel: true }, "duplicate_label"],
@@ -412,6 +493,69 @@ void test("rejects forged ZIP size metadata from both parsers before ExcelJS loa
         retrievedAt: RETRIEVED_AT,
       }),
     /xlsx_uncompressed_too_large/,
+  );
+  assert.equal(load.mock.callCount(), 0);
+});
+
+void test("rejects an EOCD-hidden ZIP bomb from both parsers before ExcelJS load", async (t) => {
+  const actual = await createWorkbookWithLargeZipExpansion();
+  const forged = forgeZipEndOfCentralDirectoryEntryCounts(actual);
+  const forgedBuffer = Buffer.from(forged);
+  const eocdOffset = forgedBuffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  assert.notEqual(eocdOffset, -1);
+  assert.equal(forgedBuffer.readUInt16LE(eocdOffset + 10), 1);
+  assert.equal(await countLocalZipEntries(forged), 16);
+  const workbook = new ExcelJS.Workbook();
+  const xlsxPrototype = Object.getPrototypeOf(workbook.xlsx) as {
+    load: (...args: unknown[]) => Promise<unknown>;
+  };
+  const load = t.mock.method(xlsxPrototype, "load", () =>
+    Promise.reject(new Error("exceljs_load_called")),
+  );
+
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
+  await assert.rejects(
+    () =>
+      parseHcpIndexWorkbook({
+        source: HCP_IPC_2017_SOURCE,
+        artifact: rawArtifactFactory(),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
+  assert.equal(load.mock.callCount(), 0);
+});
+
+void test("counts local ZIP entries beyond forged EOCD counters", async (t) => {
+  const actual = await createWorkbookWithManyZipEntries();
+  const forged = forgeZipEndOfCentralDirectoryEntryCounts(actual);
+  const workbook = new ExcelJS.Workbook();
+  const xlsxPrototype = Object.getPrototypeOf(workbook.xlsx) as {
+    load: (...args: unknown[]) => Promise<unknown>;
+  };
+  const load = t.mock.method(xlsxPrototype, "load", () =>
+    Promise.reject(new Error("exceljs_load_called")),
+  );
+
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_too_many_entries/,
   );
   assert.equal(load.mock.callCount(), 0);
 });

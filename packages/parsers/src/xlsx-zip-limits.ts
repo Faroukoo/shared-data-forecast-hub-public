@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+
 import * as unzipper from "unzipper";
 
 const MAX_WORKBOOK_BYTES = 4 * 1024 * 1024;
@@ -18,58 +20,85 @@ function decompressedChunkLength(chunk: unknown): number {
   throw new Error("invalid_xlsx_container");
 }
 
-async function enforceActualExpansionLimit(
-  directory: unzipper.CentralDirectory,
+function stopStreams(
+  source: Readable,
+  parser: unzipper.ParseStream,
+  entry?: unzipper.Entry,
+): void {
+  entry?.destroy();
+  parser.destroy();
+  source.destroy();
+}
+
+function isLimitError(error: unknown): boolean {
+  return error instanceof Error && (
+    error.message === "xlsx_too_many_entries" ||
+    error.message === "xlsx_uncompressed_too_large"
+  );
+}
+
+async function enforceLocalEntryLimits(
+  bytes: Uint8Array,
+  maxEntries: number,
   maxUncompressedBytes: number,
 ): Promise<void> {
-  let totalBytes = 0;
-  for (const file of directory.files) {
-    if (file.type === "Directory") continue;
-    let entryBytes = 0;
-    const stream = file.stream();
-    try {
-      for await (const chunk of stream) {
+  const source = Readable.from([Buffer.from(bytes)]);
+  const parser = unzipper.Parse({ forceStream: true });
+  source.pipe(parser);
+
+  let entryCount = 0;
+  let declaredBytes = 0;
+  let actualBytes = 0;
+  let currentEntry: unzipper.Entry | undefined;
+  try {
+    for await (const value of parser) {
+      const entry = value as unzipper.Entry;
+      currentEntry = entry;
+      entryCount += 1;
+      if (entryCount > maxEntries) {
+        stopStreams(source, parser, entry);
+        throw new Error("xlsx_too_many_entries");
+      }
+
+      const localVariables = entry.vars as typeof entry.vars & {
+        uncompressedSize?: number;
+      };
+      const declaredEntryBytes = localVariables.uncompressedSize ?? 0;
+      declaredBytes += declaredEntryBytes;
+      if (
+        declaredEntryBytes > maxUncompressedBytes ||
+        declaredBytes > maxUncompressedBytes
+      ) {
+        stopStreams(source, parser, entry);
+        throw new Error("xlsx_uncompressed_too_large");
+      }
+
+      let actualEntryBytes = 0;
+      for await (const chunk of entry) {
         const chunkBytes = decompressedChunkLength(chunk);
-        entryBytes += chunkBytes;
-        totalBytes += chunkBytes;
+        actualEntryBytes += chunkBytes;
+        actualBytes += chunkBytes;
         if (
-          entryBytes > maxUncompressedBytes ||
-          totalBytes > maxUncompressedBytes
+          actualEntryBytes > maxUncompressedBytes ||
+          actualBytes > maxUncompressedBytes
         ) {
-          stream.destroy();
+          stopStreams(source, parser, entry);
           throw new Error("xlsx_uncompressed_too_large");
         }
       }
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === "xlsx_uncompressed_too_large"
-      ) {
-        throw error;
-      }
-      throw new Error("invalid_xlsx_container", { cause: error });
+      currentEntry = undefined;
     }
+  } catch (error) {
+    stopStreams(source, parser, currentEntry);
+    if (isLimitError(error)) throw error;
+    throw new Error("invalid_xlsx_container", { cause: error });
   }
 }
 
 export async function enforceZipLimits(input: XlsxZipLimitInput): Promise<void> {
   if (input.bytes.byteLength > MAX_WORKBOOK_BYTES) throw new Error("workbook_too_large");
-  let directory: unzipper.CentralDirectory;
-  try {
-    directory = await unzipper.Open.buffer(Buffer.from(input.bytes));
-  } catch (error) {
-    throw new Error("invalid_xlsx_container", { cause: error });
-  }
   const maxEntries = input.limits?.maxEntries ?? MAX_XLSX_ENTRIES;
-  if (directory.files.length > maxEntries) throw new Error("xlsx_too_many_entries");
   const maxUncompressedBytes =
     input.limits?.maxUncompressedBytes ?? MAX_UNCOMPRESSED_BYTES;
-  const declaredUncompressedBytes = directory.files.reduce(
-    (total, file) => total + file.uncompressedSize,
-    0,
-  );
-  if (declaredUncompressedBytes > maxUncompressedBytes) {
-    throw new Error("xlsx_uncompressed_too_large");
-  }
-  await enforceActualExpansionLimit(directory, maxUncompressedBytes);
+  await enforceLocalEntryLimits(input.bytes, maxEntries, maxUncompressedBytes);
 }

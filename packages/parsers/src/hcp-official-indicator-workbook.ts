@@ -5,6 +5,7 @@ import {
   ObservationCandidateSchema,
   ParsedDatasetSchema,
   SCHEMA_VERSION,
+  type ObservationCandidate,
   type ParsedDataset,
   type RawArtifact,
   type SourceDefinition,
@@ -275,18 +276,22 @@ function fixedLayoutErrors(
   if (plainText(sheet.getCell(profile.headerRow, profile.dateColumn).value) !== "Date") {
     errors.push("invalid_header:date");
   }
-  for (let rowNumber = 1; rowNumber <= sheet.rowCount; rowNumber += 1) {
-    const row = sheet.getRow(rowNumber);
-    for (
-      let column = profile.lastValueColumn + 1;
-      column <= row.cellCount;
-      column += 1
-    ) {
-      if (hasCellContent(row.getCell(column).value)) {
-        errors.push(`unexpected_appended_cell:${String(rowNumber)}:${String(column)}`);
+  const appendedCellErrors: string[] = [];
+  sheet.eachRow((row, rowNumber) => {
+    if (appendedCellErrors.length > 0) return;
+    row.eachCell((cell, column) => {
+      if (
+        appendedCellErrors.length === 0 &&
+        column > profile.lastValueColumn &&
+        hasCellContent(cell.value)
+      ) {
+        appendedCellErrors.push(
+          `unexpected_appended_cell:${String(rowNumber)}:${String(column)}`,
+        );
       }
-    }
-  }
+    });
+  });
+  errors.push(...appendedCellErrors);
   return errors;
 }
 
@@ -345,25 +350,25 @@ export async function parseHcpOfficialIndicatorWorkbook(
   const retrieved = new Date(input.retrievedAt);
   const retrievedMonth =
     retrieved.getUTCFullYear() * 12 + retrieved.getUTCMonth();
-  const observations = [];
+  const observations: ObservationCandidate[] = [];
   const observedPeriods = new Set<string>();
 
-  for (let rowNumber = profile.firstDataRow; rowNumber <= sheet.rowCount; rowNumber += 1) {
-    const row = sheet.getRow(rowNumber);
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber < profile.firstDataRow) return;
     const dateValue = row.getCell(profile.dateColumn).value;
     const hasValue = labels.some(({ column }) => {
       const value = row.getCell(column).value;
       return value !== null && value !== undefined && value !== "";
     });
     if ((dateValue === null || dateValue === undefined || dateValue === "") && !hasValue) {
-      continue;
+      return;
     }
     const period = profile.dateKind === "string"
       ? periodFromString(dateValue)
       : periodFromDate(dateValue);
     if (!period) {
       parserErrors.push(`invalid_period:${String(rowNumber)}`);
-      continue;
+      return;
     }
     const periodMonth =
       Number(period.periodStart.slice(0, 4)) * 12 +
@@ -371,12 +376,12 @@ export async function parseHcpOfficialIndicatorWorkbook(
       1;
     if (periodMonth > retrievedMonth) {
       parserErrors.push(`future_period:${period.periodStart.slice(0, 7)}`);
-      continue;
+      return;
     }
     const periodKey = period.periodStart.slice(0, 7);
     if (observedPeriods.has(periodKey)) {
       parserErrors.push(`duplicate_period:${periodKey}`);
-      continue;
+      return;
     }
     observedPeriods.add(periodKey);
 
@@ -415,7 +420,7 @@ export async function parseHcpOfficialIndicatorWorkbook(
         }),
       );
     }
-  }
+  });
 
   if (observations.length === 0) parserErrors.push("empty_observations");
   return ParsedDatasetSchema.parse({

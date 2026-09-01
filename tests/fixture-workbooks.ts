@@ -27,6 +27,8 @@ interface HcpOfficialFixtureOptions {
   reorderedLabels?: boolean;
   dateHeader?: string;
   appendedBusinessColumn?: boolean;
+  sparseAppendedBusinessRow?: number;
+  sparseStyledEmptyRow?: number;
   periods?: readonly (string | Date)[];
   unexpectedString?: boolean;
   emptyValues?: boolean;
@@ -139,6 +141,18 @@ function setOfficialFixtureRows(
       sheet.getCell(row, fixtureLabels.length + 3).value = 999;
     }
   });
+  if (options.sparseAppendedBusinessRow !== undefined) {
+    sheet.getCell(
+      options.sparseAppendedBusinessRow,
+      fixtureLabels.length + 3,
+    ).value = 999;
+  }
+  if (options.sparseStyledEmptyRow !== undefined) {
+    sheet.getCell(
+      options.sparseStyledEmptyRow,
+      fixtureLabels.length + 3,
+    ).font = { bold: true };
+  }
 }
 
 export async function createHcpOfficialIpcFixture(
@@ -266,6 +280,26 @@ export function forgeZipDeclaredUncompressedSizes(
       buffer.writeUInt32LE(declaredSize, offset + 24);
     }
   }
+  return forged;
+}
+
+export function forgeZipEndOfCentralDirectoryEntryCounts(
+  input: Uint8Array,
+  declaredCount = 1,
+): Uint8Array {
+  const forged = Uint8Array.from(input);
+  const buffer = Buffer.from(forged.buffer, forged.byteOffset, forged.byteLength);
+  const signature = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  const offset = buffer.lastIndexOf(signature);
+  if (offset < 0 || offset + 22 > buffer.length) {
+    throw new Error("missing_fixture_eocd");
+  }
+  const actualCount = buffer.readUInt16LE(offset + 10);
+  if (actualCount <= declaredCount) {
+    throw new Error("fixture_eocd_count_not_reduced");
+  }
+  buffer.writeUInt16LE(declaredCount, offset + 8);
+  buffer.writeUInt16LE(declaredCount, offset + 10);
   return forged;
 }
 
