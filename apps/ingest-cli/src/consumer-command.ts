@@ -2,15 +2,18 @@ import { readFile } from "node:fs/promises";
 
 import {
   buildErpSnackConsumer,
+  buildErpSnackConsumerV2,
   verifyConsumerBundle,
   writeConsumerBundle,
   type BuildErpSnackConsumerInput,
+  type BuildErpSnackConsumerV2Input,
   type VerifyConsumerBundleInput,
   type WriteConsumerBundleInput,
 } from "@data-hub/adapters";
 import {
   SnapshotIndexSchema,
   type ConsumerPayload,
+  type ConsumerV2Payload,
 } from "@data-hub/contracts";
 
 import {
@@ -25,6 +28,7 @@ const CREATE_OPTIONS = new Set([
   "--source-tag",
   "--output-dir",
   "--code-sha",
+  "--contract-version",
 ]);
 const VERIFY_OPTIONS = new Set(["--index", "--payload", "--checksum"]);
 const SOURCE_TAG_PATTERN = /^data-\d{8}T\d{6}Z-[a-f0-9]{12}$/;
@@ -40,6 +44,9 @@ export interface ConsumerCommandDependencies {
   buildConsumer?: (
     input: BuildErpSnackConsumerInput,
   ) => Promise<ConsumerPayload>;
+  buildConsumerV2?: (
+    input: BuildErpSnackConsumerV2Input,
+  ) => Promise<ConsumerV2Payload>;
   writeBundle?: (
     input: WriteConsumerBundleInput,
   ) => Promise<{ index: ConsumerBundleIdentity }>;
@@ -82,6 +89,10 @@ async function createConsumerBundle(
   const requestedSourceTag = requiredOption(values, "--source-tag");
   const outputDir = requiredOption(values, "--output-dir");
   const codeSha = requiredOption(values, "--code-sha");
+  const contractVersion = values.get("--contract-version") ?? "v1";
+  if (contractVersion !== "v1" && contractVersion !== "v2") {
+    throw new CliUsageError("invalid_contract_version");
+  }
   if (!SOURCE_TAG_PATTERN.test(requestedSourceTag)) {
     throw new CliUsageError("invalid_source_tag");
   }
@@ -95,9 +106,15 @@ async function createConsumerBundle(
   if (requestedSourceTag.slice(-12) !== snapshot.snapshot_id.slice(0, 12)) {
     throw new Error("consumer_source_tag_snapshot_mismatch");
   }
-  const payload = await (
-    dependencies.buildConsumer ?? buildErpSnackConsumer
-  )({ dataDir, snapshot, sourceTag: requestedSourceTag });
+  const builderInput = { dataDir, snapshot, sourceTag: requestedSourceTag };
+  const payload =
+    contractVersion === "v2"
+      ? await (
+          dependencies.buildConsumerV2 ?? buildErpSnackConsumerV2
+        )(builderInput)
+      : await (
+          dependencies.buildConsumer ?? buildErpSnackConsumer
+        )(builderInput);
   if (payload.source_snapshot_tag !== requestedSourceTag) {
     throw new Error("consumer_source_tag_mismatch");
   }

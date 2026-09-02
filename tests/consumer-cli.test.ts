@@ -7,12 +7,17 @@ import test, { type TestContext } from "node:test";
 import {
   CONSUMER_CONTRACT,
   CONSUMER_PROFILE,
+  CONSUMER_V2_CONTRACT,
+  CONSUMER_V2_PROFILE,
   ConsumerPayloadSchema,
+  ConsumerV2PayloadSchema,
   SCHEMA_VERSION,
   SnapshotIndexSchema,
   type ConsumerPayload,
+  type ConsumerV2Payload,
   type SnapshotIndex,
 } from "@data-hub/contracts";
+import { writeConsumerBundle } from "@data-hub/adapters";
 
 import { executeConsumerCommand } from "../apps/ingest-cli/src/consumer-command.js";
 import { main } from "../apps/ingest-cli/src/index.js";
@@ -107,6 +112,52 @@ function payload(): ConsumerPayload {
   });
 }
 
+function payloadV2(): ConsumerV2Payload {
+  const legacySource = payload().sources[0];
+  const historicalObservation = payload().observations[0];
+  assert.ok(legacySource);
+  assert.ok(historicalObservation);
+  return ConsumerV2PayloadSchema.parse({
+    schema_version: SCHEMA_VERSION,
+    consumer_contract: CONSUMER_V2_CONTRACT,
+    source_snapshot_tag: SNAPSHOT_TAG,
+    source_snapshot_id: SNAPSHOT_ID,
+    generated_at: CREATED_AT,
+    profile_id: CONSUMER_V2_PROFILE,
+    contains_confidential_data: false,
+    decision_scope: "observation_only",
+    coverage_start: "2024-11-01",
+    coverage_end: "2026-07-31",
+    sources: [
+      legacySource,
+      {
+        source_id: "hcp-ipc-2017-official-g1-monthly",
+        publisher_name: "Haut-Commissariat au Plan",
+        official_base_url:
+          "https://www.hcp.ma/Indices-des-prix-a-la-consommation-IPC_r348.html",
+        licence_id: "CC-BY-4.0",
+        licence_evidence_url:
+          "https://www.hcp.ma/Conditions-generales-d-utilisation-Version-1-0_a2194.html",
+        health_status: "healthy",
+        retrieved_at: CREATED_AT,
+        last_period_end: "2026-07-31",
+        warning_age_days: 60,
+        expiry_age_days: 120,
+        age_days_at_snapshot: 27,
+        warning_codes: [],
+      },
+    ],
+    observations: [
+      {
+        ...historicalObservation,
+        source_id: "hcp-ipc-2017-official-g1-monthly",
+        context_role: "fresh_national_context",
+        granularity: "division",
+      },
+    ],
+  });
+}
+
 async function snapshotIndexFile(t: TestContext): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "consumer-cli-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -130,8 +181,11 @@ async function captureLogs(
   }
 }
 
-function createArgs(snapshotIndex: string): string[] {
-  return [
+function createArgs(
+  snapshotIndex: string,
+  contractVersion?: string,
+): string[] {
+  const args = [
     "create",
     "--data-dir",
     "/data/current",
@@ -144,9 +198,13 @@ function createArgs(snapshotIndex: string): string[] {
     "--code-sha",
     CODE_SHA,
   ];
+  if (contractVersion !== undefined) {
+    args.push("--contract-version", contractVersion);
+  }
+  return args;
 }
 
-void test("consumer create forwards the authoritative source tag when release and snapshot times differ", async (t) => {
+void test("consumer create defaults to the v1 builder and forwards the authoritative source tag", async (t) => {
   const snapshotIndex = await snapshotIndexFile(t);
   const consumerPayload = payload();
   let buildCalled = false;
@@ -160,6 +218,9 @@ void test("consumer create forwards the authoritative source tag when release an
         assert.deepEqual(input.snapshot, snapshot());
         assert.equal(input.sourceTag, SNAPSHOT_TAG);
         return Promise.resolve(consumerPayload);
+      },
+      buildConsumerV2: () => {
+        throw new Error("unexpected_v2_builder");
       },
       writeBundle: (input) => {
         writeCalled = true;
@@ -186,6 +247,67 @@ void test("consumer create forwards the authoritative source tag when release an
       payload_digest: PAYLOAD_DIGEST,
     },
   ]);
+});
+
+void test("consumer create selects the v2 builder only for exact v2", async (t) => {
+  const snapshotIndex = await snapshotIndexFile(t);
+  const consumerPayload = payloadV2();
+  let v2BuildCalled = false;
+
+  const result = await captureLogs(() =>
+    executeConsumerCommand(createArgs(snapshotIndex, "v2"), {
+      buildConsumer: () => {
+        throw new Error("unexpected_v1_builder");
+      },
+      buildConsumerV2: (input) => {
+        v2BuildCalled = true;
+        assert.equal(input.dataDir, "/data/current");
+        assert.deepEqual(input.snapshot, snapshot());
+        assert.equal(input.sourceTag, SNAPSHOT_TAG);
+        return Promise.resolve(consumerPayload);
+      },
+      writeBundle: (input) => {
+        assert.equal(input.payload, consumerPayload);
+        return Promise.resolve({
+          index: {
+            source_snapshot_tag: SNAPSHOT_TAG,
+            payload: { sha256: PAYLOAD_DIGEST },
+          },
+        });
+      },
+    }),
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(v2BuildCalled, true);
+  assert.deepEqual(result.lines.map((line) => JSON.parse(line) as unknown), [
+    {
+      event: "consumer_bundle_created",
+      source_tag: SNAPSHOT_TAG,
+      payload_digest: PAYLOAD_DIGEST,
+    },
+  ]);
+});
+
+void test("consumer create rejects every contract version other than exact v1 or v2 without leaking it", async () => {
+  const secretVersion = "v2-/private/token-credential_secret";
+  const result = await captureLogs(() =>
+    executeConsumerCommand(createArgs("/private/snapshot-index.json", secretVersion)),
+  );
+
+  assert.equal(result.exitCode, 64);
+  assert.deepEqual(result.lines.map((line) => JSON.parse(line) as unknown), [
+    {
+      event: "consumer_command_failed",
+      error_code: "invalid_contract_version",
+    },
+  ]);
+  assert.equal(
+    result.lines.some((line) =>
+      /private|token|credential_secret|snapshot-index/.test(line),
+    ),
+    false,
+  );
 });
 
 void test("consumer verify maps its three exact paths and logs the verified digest", async () => {
@@ -226,6 +348,64 @@ void test("consumer verify maps its three exact paths and logs the verified dige
       event: "consumer_bundle_verified",
       source_tag: SNAPSHOT_TAG,
       payload_digest: PAYLOAD_DIGEST,
+    },
+  ]);
+});
+
+void test("consumer verify accepts a self-describing v2 bundle", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "consumer-cli-v2-verify-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const created = await writeConsumerBundle({
+    outputDir: join(root, "bundle"),
+    payload: payloadV2(),
+    codeSha: CODE_SHA,
+  });
+
+  const result = await captureLogs(() =>
+    executeConsumerCommand([
+      "verify",
+      "--index",
+      created.indexPath,
+      "--payload",
+      created.payloadPath,
+      "--checksum",
+      created.checksumPath,
+    ]),
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(result.lines.map((line) => JSON.parse(line) as unknown), [
+    {
+      event: "consumer_bundle_verified",
+      source_tag: SNAPSHOT_TAG,
+      payload_digest: created.index.payload.sha256,
+    },
+  ]);
+});
+
+void test("consumer create refuses a v2 payload whose source tag differs from the request", async (t) => {
+  const snapshotIndex = await snapshotIndexFile(t);
+  const mismatchedPayload: ConsumerV2Payload = {
+    ...payloadV2(),
+    source_snapshot_tag: "data-20260827T095123Z-aaaaaaaaaaaa",
+  };
+  let writeCalled = false;
+  const result = await captureLogs(() =>
+    executeConsumerCommand(createArgs(snapshotIndex, "v2"), {
+      buildConsumerV2: () => Promise.resolve(mismatchedPayload),
+      writeBundle: () => {
+        writeCalled = true;
+        throw new Error("unexpected_write");
+      },
+    }),
+  );
+
+  assert.equal(result.exitCode, 4);
+  assert.equal(writeCalled, false);
+  assert.deepEqual(result.lines.map((line) => JSON.parse(line) as unknown), [
+    {
+      event: "consumer_command_failed",
+      error_code: "consumer_validation_failed",
     },
   ]);
 });
