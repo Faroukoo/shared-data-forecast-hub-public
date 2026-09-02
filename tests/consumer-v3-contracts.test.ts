@@ -179,6 +179,24 @@ void test("consumer v3 rejects non-closed, future and non-positive or unbounded 
   assert.throws(() => ConsumerV3PayloadSchema.parse(mutateFirst({ value: "9".repeat(400) })), /positive_bounded_index_required/);
 });
 
+void test("consumer v3 caps the base-100 IPC index at exactly 1000", () => {
+  const payload = consumerV3PayloadFixture();
+  const withFirstValue = (value: string) => ({
+    ...payload,
+    observations: [{ ...payload.observations[0], value }, ...payload.observations.slice(1)],
+  });
+
+  assert.doesNotThrow(() => ConsumerV3PayloadSchema.parse(withFirstValue("1000")));
+  assert.throws(
+    () => ConsumerV3PayloadSchema.parse(withFirstValue("1000.1")),
+    /positive_bounded_index_required/,
+  );
+  assert.throws(
+    () => ConsumerV3PayloadSchema.parse(withFirstValue("1".repeat(308))),
+    /positive_bounded_index_required/,
+  );
+});
+
 void test("consumer v3 binds coverage and source age evidence to observations and snapshot", () => {
   const payload = consumerV3PayloadFixture();
   assert.throws(() => ConsumerV3PayloadSchema.parse({ ...payload, coverage_start: "2024-10-01" }), /coverage_observation_mismatch/);

@@ -11,6 +11,7 @@ import { SCHEMA_VERSION } from "./schema-version.js";
 
 export const CONSUMER_V3_CONTRACT = "erp-snack-observation-v3" as const;
 export const CONSUMER_V3_PROFILE = "erp-snack-observation-v3" as const;
+export const CONSUMER_V3_MAX_INDEX_VALUE = "1000" as const;
 export const CONSUMER_V3_TUPLES = Object.freeze([Object.freeze({
   category: "food_overall",
   locationKey: "ma",
@@ -51,6 +52,17 @@ function ageDays(periodEnd: string, generatedAt: string): number {
     (Date.parse(generatedAt) - Date.parse(`${periodEnd}T00:00:00.000Z`)) /
       86_400_000,
   );
+}
+
+function positiveIndexWithinV3Bound(value: string): boolean {
+  if (value === "0" || value.startsWith("-")) return false;
+  const [integerPart, fractionalPart] = value.split(".");
+  if (!integerPart) return false;
+  if (integerPart.length < CONSUMER_V3_MAX_INDEX_VALUE.length) return true;
+  if (integerPart.length > CONSUMER_V3_MAX_INDEX_VALUE.length) return false;
+  if (integerPart < CONSUMER_V3_MAX_INDEX_VALUE) return true;
+  if (integerPart > CONSUMER_V3_MAX_INDEX_VALUE) return false;
+  return fractionalPart === undefined;
 }
 
 const ConsumerV3SourceBaseSchema = z.object({
@@ -127,8 +139,7 @@ export const ConsumerV3ObservationSchema: z.ZodType<ConsumerV3Observation> =
         path: ["period_end"],
       });
     }
-    const numericValue = Number(value.value);
-    if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    if (!positiveIndexWithinV3Bound(value.value)) {
       context.addIssue({
         code: "custom",
         message: "positive_bounded_index_required",

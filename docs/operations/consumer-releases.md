@@ -11,7 +11,7 @@ Une release `consumer-v1-*`, `consumer-v2-*` ou `consumer-v3-*` est une projecti
 
 Une release ne mélange jamais les noms v1, v2 et v3. Le contrat v1 reste le défaut du CLI et la seule famille publiée ou promue automatiquement. Les contrats v2 et v3 sont limités aux vérifications et aux candidates manuelles tant qu'une porte de promotion stable séparée n'a pas été conçue, revue et explicitement autorisée.
 
-Le chemin v3 fournit uniquement la capacité de produire un contexte macro national HCP sur vingt-quatre mois, avec Casablanca comme contexte d'exploitation et les achats ERP comme seule autorité de localisation d'approvisionnement. Ce plan ne lance aucun workflow, ne crée aucune candidate, ne promeut aucune release et n'active rien en production.
+Le chemin v3 fournit uniquement la capacité de produire un contexte macro national HCP sur vingt-quatre mois, avec Casablanca comme contexte d'exploitation et les achats ERP comme seule autorité de localisation d'approvisionnement. Son contrat IPC base 100 exige une valeur décimale strictement positive et au plus égale à `1000`, sans conversion en nombre binaire. Ce plan ne lance aucun workflow, ne crée aucune candidate, ne promeut aucune release et n'active rien en production.
 
 Le workflow ne consomme jamais `latest`, un brouillon ou une prérelease `data-*`. Il restaure les trois assets source dans le répertoire temporaire du runner, vérifie l'état complet, reconstruit la projection puis vérifie le bundle avant toute décision de publication. Le mode `verify` n'a qu'un jeton `contents: read` et n'écrit aucune release.
 

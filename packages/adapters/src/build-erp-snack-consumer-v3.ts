@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { canonicalJson } from "@data-hub/canonical";
+import { canonicalJson, sha256Hex } from "@data-hub/canonical";
 import {
   CONSUMER_V3_CONTRACT,
   CONSUMER_V3_PROFILE,
@@ -25,6 +25,8 @@ const SOURCE_TAG_PATTERN = /^data-\d{8}T\d{6}Z-[a-f0-9]{12}$/;
 const ADMISSIBLE_SNAPSHOT_STATES = new Set(["published", "no_change"]);
 const ADMISSIBLE_SOURCE_HEALTH = new Set(["healthy", "late", "stale"]);
 const DAY_MS = 86_400_000;
+const FOOD_SERIES_LABEL =
+  "Produits alimentaires et boissons non alcoolisées";
 
 type AdmittedObservation = CanonicalObservation & {
   quality_status: ConsumerV3Observation["quality_status"];
@@ -130,6 +132,25 @@ function isAdmitted(row: CanonicalObservation): row is AdmittedObservation {
     row.quality_status === "accepted_with_warning";
 }
 
+function validateSourceObservation(row: AdmittedObservation): void {
+  const expectedNaturalKey =
+    `${TUPLE.seriesKey}|${TUPLE.locationKey}|${row.period_start.slice(0, 7)}`;
+  const { observation_id: ignored, ...evidence } = row;
+  void ignored;
+  const expectedObservationId = `sha256:${sha256Hex(canonicalJson(evidence))}`;
+  const revisionLinkInvalid = row.revision_number === 1
+    ? row.supersedes_observation_id !== null
+    : row.supersedes_observation_id === null;
+  if (
+    row.natural_key !== expectedNaturalKey ||
+    row.source_series_label !== FOOD_SERIES_LABEL ||
+    row.observation_id !== expectedObservationId ||
+    revisionLinkInvalid
+  ) {
+    throw new Error("consumer_v3_observation_provenance_invalid");
+  }
+}
+
 function currentRevisionByPeriod(
   rows: readonly AdmittedObservation[],
 ): AdmittedObservation[] {
@@ -190,11 +211,18 @@ function projectWithSourceTag(input: {
       row.location_key === TUPLE.locationKey &&
       isAdmitted(row),
   );
+  rows.forEach(validateSourceObservation);
   const currentRows = currentRevisionByPeriod(rows);
   if (currentRows.length < 24) {
     throw new Error(`consumer_v3_profile_history_incomplete:${String(currentRows.length)}`);
   }
   const selected = currentRows.slice(-24);
+  if (
+    snapshotSource.state === "published" &&
+    selected.some((row) => row.artifact_sha256 !== snapshotSource.artifact_sha256)
+  ) {
+    throw new Error("consumer_v3_observation_artifact_mismatch");
+  }
   for (const row of selected) {
     if (
       row.frequency !== "monthly" ||

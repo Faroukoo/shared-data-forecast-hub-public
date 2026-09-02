@@ -74,6 +74,7 @@ export {
 } from "./consumer-v2.js";
 export {
   CONSUMER_V3_CONTRACT,
+  CONSUMER_V3_MAX_INDEX_VALUE,
   CONSUMER_V3_PROFILE,
   CONSUMER_V3_TUPLES,
   ConsumerV3IndexSchema,

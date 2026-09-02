@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { canonicalJson } from "@data-hub/canonical";
+import { canonicalJson, sha256Hex } from "@data-hub/canonical";
 import {
   ERP_SNACK_V3_TUPLES,
   buildErpSnackConsumerV3,
@@ -31,6 +31,8 @@ import {
 } from "./consumer-v3-fixture.js";
 
 const DATASET_ID = `sha256:${"e".repeat(64)}`;
+const FOOD_SERIES_LABEL =
+  "Produits alimentaires et boissons non alcoolisées";
 const PERIODS = [
   ["2024-08-01", "2024-08-31", "100"],
   ["2024-09-01", "2024-09-30", "101"],
@@ -74,16 +76,14 @@ function observation(input: {
   const locationKey = input.locationKey ?? "ma";
   const revisionNumber = input.revisionNumber ?? 1;
   const qualityStatus = input.qualityStatus ?? "accepted";
-  return CanonicalObservationSchema.parse({
+  const commonEvidence = {
     schema_version: SCHEMA_VERSION,
-    observation_id: `sha256:${sourceId}|${seriesKey}|${locationKey}|${period[0]}|${String(revisionNumber)}`,
     natural_key: `${seriesKey}|${locationKey}|${period[0].slice(0, 7)}`,
     series_key: seriesKey,
-    source_series_label: "Produits alimentaires",
+    source_series_label: FOOD_SERIES_LABEL,
     period_start: period[0],
     period_end: period[1],
     frequency: "monthly",
-    value: input.value ?? period[2],
     unit: "index",
     currency: null,
     scaling_factor: "1",
@@ -97,8 +97,36 @@ function observation(input: {
     source_published_at: null,
     quality_status: qualityStatus,
     warning_codes: qualityStatus === "accepted_with_warning" ? ["source_late"] : [],
+  } as const;
+  const initialEvidence = {
+    ...commonEvidence,
+    value: period[2],
+    revision_number: 1,
+    supersedes_observation_id: null,
+  };
+  const supersedesObservationId = revisionNumber === 1
+    ? null
+    : `sha256:${sha256Hex(canonicalJson(initialEvidence))}`;
+  const evidence = {
+    ...commonEvidence,
+    value: input.value ?? period[2],
     revision_number: revisionNumber,
-    supersedes_observation_id: revisionNumber === 1 ? null : `sha256:prior-${period[0]}`,
+    supersedes_observation_id: supersedesObservationId,
+  };
+  return CanonicalObservationSchema.parse({
+    ...evidence,
+    observation_id: `sha256:${sha256Hex(canonicalJson(evidence))}`,
+  });
+}
+
+function recomputeObservationId(
+  row: CanonicalObservation,
+): CanonicalObservation {
+  const { observation_id: ignored, ...evidence } = row;
+  void ignored;
+  return CanonicalObservationSchema.parse({
+    ...evidence,
+    observation_id: `sha256:${sha256Hex(canonicalJson(evidence))}`,
   });
 }
 
@@ -217,8 +245,53 @@ void test("rejects missing, unexpected and incomplete canonical datasets", () =>
 
 void test("rejects duplicate revisions for the selected tuple period", () => {
   const rows = observations();
-  rows.push({ ...observation({ periodIndex: 24 }), observation_id: "sha256:duplicate" });
+  rows.push(observation({ periodIndex: 24 }));
   assert.throws(() => project(rows), /consumer_v3_period_revision_duplicate/);
+});
+
+void test("rejects source-specific provenance mutations before revision resolution", () => {
+  const base = observation({ periodIndex: 1 });
+  const mutations: ReadonlyArray<{
+    name: string;
+    row: CanonicalObservation;
+  }> = [
+    {
+      name: "natural key",
+      row: recomputeObservationId({ ...base, natural_key: "wrong|ma|2024-09" }),
+    },
+    {
+      name: "source label",
+      row: recomputeObservationId({ ...base, source_series_label: "Alimentation" }),
+    },
+    {
+      name: "observation id",
+      row: { ...base, observation_id: `sha256:${"f".repeat(64)}` },
+    },
+    {
+      name: "revision one supersedes a predecessor",
+      row: recomputeObservationId({
+        ...base,
+        supersedes_observation_id: `sha256:${"a".repeat(64)}`,
+      }),
+    },
+    {
+      name: "later revision omits its predecessor",
+      row: recomputeObservationId({
+        ...base,
+        revision_number: 2,
+        supersedes_observation_id: null,
+      }),
+    },
+  ];
+  for (const mutation of mutations) {
+    const rows = observations();
+    rows[1] = mutation.row;
+    assert.throws(
+      () => project(rows),
+      /consumer_v3_observation_provenance_invalid/,
+      mutation.name,
+    );
+  }
 });
 
 void test("rejects unexpected metadata on selected canonical observations", () => {
@@ -232,9 +305,38 @@ void test("rejects unexpected metadata on selected canonical observations", () =
   for (const mutation of mutations) {
     const rows = observations();
     const row = rows[1] ?? assert.fail("missing selected observation");
-    rows[1] = { ...row, ...mutation };
+    rows[1] = recomputeObservationId({ ...row, ...mutation });
     assert.throws(() => project(rows), /consumer_v3_observation_metadata_invalid/);
   }
+});
+
+void test("rejects a selected artifact outside published snapshot evidence", () => {
+  const rows = observations();
+  const row = rows[1] ?? assert.fail("missing selected observation");
+  rows[1] = recomputeObservationId({
+    ...row,
+    artifact_sha256: "b".repeat(64),
+  });
+  assert.throws(
+    () => project(rows),
+    /consumer_v3_observation_artifact_mismatch/,
+  );
+});
+
+void test("allows a no-change snapshot to carry its verified prior dataset artifact", () => {
+  const source = snapshot().sources[0] ?? assert.fail("missing snapshot source");
+  const noChangeSnapshot = snapshot({
+    sources: [{
+      ...source,
+      state: "no_change",
+      artifact_sha256: "b".repeat(64),
+    }],
+  });
+  assert.doesNotThrow(() => projectErpSnackV3Observations({
+    observationsBySource: new Map([[V3_SOURCE_ID, observations()]]),
+    snapshot: noChangeSnapshot,
+    sources: [HCP_IPC_2017_OFFICIAL_G1_SOURCE],
+  }));
 });
 
 const SOURCE_MUTATIONS: ReadonlyArray<{
