@@ -3,11 +3,15 @@ import test from "node:test";
 
 import {
   CONSUMER_V2_CONTRACT,
-  CONSUMER_V2_PROFILE,
   ConsumerV2IndexSchema,
   ConsumerV2PayloadSchema,
   SCHEMA_VERSION,
 } from "@data-hub/contracts";
+
+import {
+  compareConsumerV2FixtureObservations,
+  consumerV2PayloadFixture,
+} from "./consumer-v2-fixture.js";
 
 const SNAPSHOT_ID = "9d3b77bbfc0cf05cbc0f2e27f24cfb0b348ce0e5d71b09267fbd7ce67657e226";
 const SNAPSHOT_TAG = "data-20260827T095123Z-9d3b77bbfc0c";
@@ -15,119 +19,23 @@ const V2_SOURCE_IDS = [
   "hcp-ipc-2017-monthly",
   "hcp-ipc-2017-official-g1-monthly",
 ] as const;
-const SERIES = [
-  {
-    seriesKey: "hcp.ipc2017.01",
-    category: "food_overall",
-    labelFr: "Alimentation",
-    granularity: "division",
-  },
-  {
-    seriesKey: "hcp.ipc2017.0111",
-    category: "bread_cereals",
-    labelFr: "Pain et céréales",
-    granularity: "group_of_products",
-  },
-  {
-    seriesKey: "hcp.ipc2017.0113",
-    category: "fish_seafood",
-    labelFr: "Poisson et fruits de mer",
-    granularity: "group_of_products",
-  },
-  {
-    seriesKey: "hcp.ipc2017.0115",
-    category: "oils_fats",
-    labelFr: "Huiles et graisses",
-    granularity: "group_of_products",
-  },
-  {
-    seriesKey: "hcp.ipc2017.0117",
-    category: "vegetables",
-    labelFr: "Légumes",
-    granularity: "group_of_products",
-  },
-] as const;
-const LOCATIONS = [
-  "ma",
-  "ma:city:al-hoceima",
-  "ma:city:tetouan",
-] as const;
-
-type SeriesFixture = (typeof SERIES)[number];
-type LocationFixture = (typeof LOCATIONS)[number];
-
-function source(sourceId: (typeof V2_SOURCE_IDS)[number]) {
-  const official = sourceId === "hcp-ipc-2017-official-g1-monthly";
-  return {
-    source_id: sourceId,
-    publisher_name: "Haut-Commissariat au Plan",
-    official_base_url: "https://www.hcp.ma/",
-    licence_id: official ? "CC-BY-4.0" : "ODbL-1.0",
-    licence_evidence_url: official
-      ? "https://www.hcp.ma/Indices-des-prix-a-la-consommation-IPC_r348.html"
-      : "https://data.gov.ma/data/fr/dataset/data_7_5",
-    health_status: official ? ("healthy" as const) : ("stale" as const),
-    retrieved_at: "2026-08-27T09:51:23.000Z",
-    last_period_end: official ? "2026-08-31" : "2024-11-30",
-    warning_age_days: 60,
-    expiry_age_days: 120,
-    age_days_at_snapshot: official ? 0 : 635,
-    warning_codes: official ? [] : ["source_stale"],
-  };
-}
-
-function latestCell(series: SeriesFixture, locationKey: LocationFixture) {
-  const freshNational =
-    series.category === "food_overall" && locationKey === "ma";
-  return {
-    series_key: series.seriesKey,
-    label_fr: series.labelFr,
-    category: series.category,
-    usage: "macro_context_only" as const,
-    geography_type: locationKey === "ma" ? ("country" as const) : ("city" as const),
-    location_key: locationKey,
-    period_start: freshNational ? "2026-08-01" : "2024-11-01",
-    period_end: freshNational ? "2026-08-31" : "2024-11-30",
-    frequency: "monthly" as const,
-    value: freshNational ? "101.2" : "118.4",
-    unit: "index" as const,
-    base_year: 2017 as const,
-    scaling_factor: "1",
-    source_id: freshNational
-      ? ("hcp-ipc-2017-official-g1-monthly" as const)
-      : ("hcp-ipc-2017-monthly" as const),
-    artifact_sha256: freshNational ? "c".repeat(64) : "b".repeat(64),
-    retrieved_at: "2026-08-27T09:51:23.000Z",
-    quality_status: freshNational
-      ? ("accepted" as const)
-      : ("accepted_with_warning" as const),
-    warning_codes: freshNational ? [] : ["source_stale"],
-    revision_number: 1,
-    context_role: freshNational
-      ? ("fresh_national_context" as const)
-      : ("historical_detailed_context" as const),
-    granularity: series.granularity,
-  };
-}
 
 function validPayload() {
-  const observations = SERIES.flatMap((series) =>
-    LOCATIONS.map((location) => latestCell(series, location)),
-  );
-  return {
-    schema_version: SCHEMA_VERSION,
-    consumer_contract: CONSUMER_V2_CONTRACT,
-    source_snapshot_tag: SNAPSHOT_TAG,
-    source_snapshot_id: SNAPSHOT_ID,
-    generated_at: "2026-08-27T09:51:23.000Z",
-    profile_id: CONSUMER_V2_PROFILE,
-    contains_confidential_data: false as const,
-    decision_scope: "observation_only" as const,
-    coverage_start: "2024-11-01",
-    coverage_end: "2026-08-31",
-    sources: V2_SOURCE_IDS.map(source),
-    observations,
-  };
+  return consumerV2PayloadFixture({
+    snapshotId: SNAPSHOT_ID,
+    snapshotTag: SNAPSHOT_TAG,
+    generatedAt: "2026-08-27T09:51:23.000Z",
+  });
+}
+
+function observationFor(
+  payload: ReturnType<typeof validPayload>,
+  seriesKey: string,
+  locationKey: string,
+) {
+  return payload.observations.find(
+    (row) => row.series_key === seriesKey && row.location_key === locationKey,
+  ) ?? assert.fail(`missing fixture observation: ${seriesKey}|${locationKey}`);
 }
 
 function validIndex() {
@@ -141,8 +49,8 @@ function validIndex() {
     created_at: "2026-08-27T09:51:23.000Z",
     code_sha: "c".repeat(40),
     indicator_count: 5,
-    observation_count: 15,
-    coverage_start: "2024-11-01",
+    observation_count: 360,
+    coverage_start: "2023-01-01",
     coverage_end: "2026-08-31",
     source_ids: [...V2_SOURCE_IDS],
     payload: {
@@ -153,15 +61,15 @@ function validIndex() {
   };
 }
 
-void test("consumer v2 accepts the exact fifteen-cell two-source fixture", () => {
+void test("consumer v2 accepts exactly 24 periods for each canonical tuple", () => {
   const parsed = ConsumerV2PayloadSchema.parse(validPayload());
 
   assert.equal(parsed.consumer_contract, "erp-snack-observation-v2");
   assert.equal(parsed.profile_id, "erp-snack-observation-v2");
   assert.deepEqual(parsed.sources.map((entry) => entry.source_id), V2_SOURCE_IDS);
-  assert.equal(parsed.observations.length, 15);
+  assert.equal(parsed.observations.length, 360);
   assert.deepEqual(
-    parsed.observations.map((row) => `${row.series_key}|${row.location_key}`),
+    [...new Set(parsed.observations.map((row) => `${row.series_key}|${row.location_key}`))],
     [
       "hcp.ipc2017.01|ma",
       "hcp.ipc2017.01|ma:city:al-hoceima",
@@ -246,7 +154,11 @@ void test("consumer v2 rejects duplicate and unsorted observations", () => {
 void test("consumer v2 binds each observation role to its required source", () => {
   const payload = validPayload();
   const freshNational = payload.observations[0];
-  const historicalDetailed = payload.observations[3];
+  const historicalDetailed = observationFor(
+    payload,
+    "hcp.ipc2017.0111",
+    "ma",
+  );
 
   assert.throws(
     () => ConsumerV2PayloadSchema.parse({
@@ -261,8 +173,8 @@ void test("consumer v2 binds each observation role to its required source", () =
   assert.throws(
     () => ConsumerV2PayloadSchema.parse({
       ...payload,
-      observations: payload.observations.map((row, index) =>
-        index === 3
+      observations: payload.observations.map((row) =>
+        row === historicalDetailed
           ? { ...historicalDetailed, source_id: "hcp-ipc-2017-official-g1-monthly" }
           : row,
       ),
@@ -292,12 +204,17 @@ void test("consumer v2 requires the exact national food tuple to use official fr
 
 void test("consumer v2 rejects a city location marked as country geography", () => {
   const payload = validPayload();
+  const cityObservation = observationFor(
+    payload,
+    "hcp.ipc2017.01",
+    "ma:city:al-hoceima",
+  );
 
   assert.throws(
     () => ConsumerV2PayloadSchema.parse({
       ...payload,
-      observations: payload.observations.map((row, index) =>
-        index === 1 ? { ...row, geography_type: "country" } : row,
+      observations: payload.observations.map((row) =>
+        row === cityObservation ? { ...row, geography_type: "country" } : row,
       ),
     }),
     /geography_type_location_mismatch/,
@@ -321,6 +238,11 @@ void test("consumer v2 rejects the fresh national location marked as city geogra
 
 void test("consumer v2 rejects invalid context role and granularity combinations", () => {
   const payload = validPayload();
+  const historicalDetailed = observationFor(
+    payload,
+    "hcp.ipc2017.0111",
+    "ma",
+  );
 
   assert.throws(
     () => ConsumerV2PayloadSchema.parse({
@@ -335,29 +257,165 @@ void test("consumer v2 rejects invalid context role and granularity combinations
   assert.throws(
     () => ConsumerV2PayloadSchema.parse({
       ...payload,
-      observations: payload.observations.map((row, index) =>
-        index === 3 ? { ...row, context_role: "fresh_national_context" } : row,
+      observations: payload.observations.map((row) =>
+        row === historicalDetailed
+          ? { ...row, context_role: "fresh_national_context" }
+          : row,
       ),
     }),
     /fresh_national_context_observation_mismatch/,
   );
 });
 
-void test("consumer v2 observation order uses code units for non-ASCII series", () => {
+void test("consumer v2 ordering stays locale-independent inside the allowed domain", () => {
   const payload = validPayload();
-  const detailed = payload.observations[3];
-
-  const parsed = ConsumerV2PayloadSchema.parse({
-    ...payload,
-    observations: [
-      { ...detailed, series_key: "hcp.ipc2017.z" },
-      { ...detailed, series_key: "hcp.ipc2017.é" },
-    ],
+  const localeCompareDescriptor = Object.getOwnPropertyDescriptor(
+    String.prototype,
+    "localeCompare",
+  ) ?? assert.fail("missing String.prototype.localeCompare descriptor");
+  Object.defineProperty(String.prototype, "localeCompare", {
+    ...localeCompareDescriptor,
+    value: () => {
+      throw new Error("locale_comparison_forbidden");
+    },
   });
 
-  assert.deepEqual(
-    parsed.observations.map((row) => row.series_key),
-    ["hcp.ipc2017.z", "hcp.ipc2017.é"],
+  try {
+    const parsed = ConsumerV2PayloadSchema.parse(payload);
+    assert.equal(parsed.observations.length, 360);
+  } finally {
+    Object.defineProperty(
+      String.prototype,
+      "localeCompare",
+      localeCompareDescriptor,
+    );
+  }
+});
+
+void test("consumer v2 rejects an invented series inside an otherwise valid tuple", () => {
+  const payload = validPayload();
+  const target = observationFor(payload, "hcp.ipc2017.0111", "ma");
+  const observations = payload.observations
+    .map((row) =>
+      row === target ? { ...row, series_key: "hcp.ipc2017.0112" } : row,
+    )
+    .sort(compareConsumerV2FixtureObservations);
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({ ...payload, observations }),
+    /consumer_v2_observation_tuple_invalid/,
+  );
+});
+
+void test("consumer v2 rejects a category that does not match its canonical series", () => {
+  const payload = validPayload();
+  const target = observationFor(payload, "hcp.ipc2017.0111", "ma");
+  const observations = payload.observations.map((row) =>
+    row === target ? { ...row, category: "fish_seafood" as const } : row,
+  );
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({ ...payload, observations }),
+    /consumer_v2_observation_tuple_invalid/,
+  );
+});
+
+void test("consumer v2 rejects one canonical tuple with only 23 periods", () => {
+  const payload = validPayload();
+  const target = observationFor(
+    payload,
+    "hcp.ipc2017.0117",
+    "ma:city:tetouan",
+  );
+  const observations = payload.observations.filter((row) => row !== target);
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({ ...payload, observations }),
+    /consumer_v2_tuple_period_count_invalid:vegetables\|ma:city:tetouan:23/,
+  );
+});
+
+void test("consumer v2 rejects one canonical tuple with 25 periods", () => {
+  const payload = validPayload();
+  const last = [...payload.observations]
+    .reverse()
+    .find(
+      (row) =>
+        row.series_key === "hcp.ipc2017.0117" &&
+        row.location_key === "ma:city:tetouan",
+    ) ?? assert.fail("missing last tuple observation");
+  const observations = [
+    ...payload.observations,
+    {
+      ...last,
+      period_start: "2025-01-01",
+      period_end: "2025-01-31",
+    },
+  ];
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({ ...payload, observations }),
+    /consumer_v2_tuple_period_count_invalid:vegetables\|ma:city:tetouan:25/,
+  );
+});
+
+void test("consumer v2 rejects a missing canonical tuple", () => {
+  const payload = validPayload();
+  const observations = payload.observations.filter(
+    (row) =>
+      row.series_key !== "hcp.ipc2017.0117" ||
+      row.location_key !== "ma:city:tetouan",
+  );
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({ ...payload, observations }),
+    /consumer_v2_tuple_period_count_invalid:vegetables\|ma:city:tetouan:0/,
+  );
+});
+
+void test("consumer v2 rejects a supplementary out-of-matrix tuple", () => {
+  const payload = validPayload();
+  const template = observationFor(payload, "hcp.ipc2017.0111", "ma");
+  const supplementary = payload.observations
+    .filter(
+      (row) =>
+        row.series_key === template.series_key &&
+        row.location_key === template.location_key,
+    )
+    .map((row) => ({ ...row, series_key: "hcp.ipc2017.0112" }));
+  const observations = [...payload.observations, ...supplementary].sort(
+    compareConsumerV2FixtureObservations,
+  );
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({ ...payload, observations }),
+    /consumer_v2_observation_tuple_invalid/,
+  );
+});
+
+void test("consumer v2 rejects two revisions for one tuple period", () => {
+  const payload = validPayload();
+  const first = payload.observations[0] ?? assert.fail("missing observation");
+  const observations = [
+    ...payload.observations,
+    { ...first, revision_number: 2 },
+  ].sort(compareConsumerV2FixtureObservations);
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({ ...payload, observations }),
+    /consumer_v2_tuple_period_revision_duplicate/,
+  );
+});
+
+void test("consumer v2 rejects any altered observation total", () => {
+  const payload = validPayload();
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({
+      ...payload,
+      observations: payload.observations.slice(0, -1),
+    }),
+    /consumer_v2_observation_count_invalid:359/,
   );
 });
 

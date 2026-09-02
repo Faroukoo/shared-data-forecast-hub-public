@@ -12,6 +12,146 @@ import { SCHEMA_VERSION } from "./schema-version.js";
 export const CONSUMER_V2_CONTRACT = "erp-snack-observation-v2" as const;
 export const CONSUMER_V2_PROFILE = "erp-snack-observation-v2" as const;
 
+export const CONSUMER_V2_TUPLES = Object.freeze([
+  Object.freeze({
+    category: "food_overall",
+    locationKey: "ma",
+    seriesKey: "hcp.ipc2017.01",
+    sourceId: "hcp-ipc-2017-official-g1-monthly",
+    contextRole: "fresh_national_context",
+    granularity: "division",
+    geographyType: "country",
+  }),
+  Object.freeze({
+    category: "food_overall",
+    locationKey: "ma:city:al-hoceima",
+    seriesKey: "hcp.ipc2017.01",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "division",
+    geographyType: "city",
+  }),
+  Object.freeze({
+    category: "food_overall",
+    locationKey: "ma:city:tetouan",
+    seriesKey: "hcp.ipc2017.01",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "division",
+    geographyType: "city",
+  }),
+  Object.freeze({
+    category: "bread_cereals",
+    locationKey: "ma",
+    seriesKey: "hcp.ipc2017.0111",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "country",
+  }),
+  Object.freeze({
+    category: "bread_cereals",
+    locationKey: "ma:city:al-hoceima",
+    seriesKey: "hcp.ipc2017.0111",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "city",
+  }),
+  Object.freeze({
+    category: "bread_cereals",
+    locationKey: "ma:city:tetouan",
+    seriesKey: "hcp.ipc2017.0111",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "city",
+  }),
+  Object.freeze({
+    category: "fish_seafood",
+    locationKey: "ma",
+    seriesKey: "hcp.ipc2017.0113",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "country",
+  }),
+  Object.freeze({
+    category: "fish_seafood",
+    locationKey: "ma:city:al-hoceima",
+    seriesKey: "hcp.ipc2017.0113",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "city",
+  }),
+  Object.freeze({
+    category: "fish_seafood",
+    locationKey: "ma:city:tetouan",
+    seriesKey: "hcp.ipc2017.0113",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "city",
+  }),
+  Object.freeze({
+    category: "oils_fats",
+    locationKey: "ma",
+    seriesKey: "hcp.ipc2017.0115",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "country",
+  }),
+  Object.freeze({
+    category: "oils_fats",
+    locationKey: "ma:city:al-hoceima",
+    seriesKey: "hcp.ipc2017.0115",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "city",
+  }),
+  Object.freeze({
+    category: "oils_fats",
+    locationKey: "ma:city:tetouan",
+    seriesKey: "hcp.ipc2017.0115",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "city",
+  }),
+  Object.freeze({
+    category: "vegetables",
+    locationKey: "ma",
+    seriesKey: "hcp.ipc2017.0117",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "country",
+  }),
+  Object.freeze({
+    category: "vegetables",
+    locationKey: "ma:city:al-hoceima",
+    seriesKey: "hcp.ipc2017.0117",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "city",
+  }),
+  Object.freeze({
+    category: "vegetables",
+    locationKey: "ma:city:tetouan",
+    seriesKey: "hcp.ipc2017.0117",
+    sourceId: "hcp-ipc-2017-monthly",
+    contextRole: "historical_detailed_context",
+    granularity: "group_of_products",
+    geographyType: "city",
+  }),
+] as const);
+
+export type ConsumerV2Tuple = (typeof CONSUMER_V2_TUPLES)[number];
+
 const V2_SOURCE_IDS = [
   "hcp-ipc-2017-monthly",
   "hcp-ipc-2017-official-g1-monthly",
@@ -31,6 +171,30 @@ function isExactSortedSourcePair(values: readonly string[]): boolean {
 function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
+
+function tupleSignature(tuple: {
+  category: string;
+  locationKey: string;
+  seriesKey: string;
+  sourceId: string;
+  contextRole: string;
+  granularity: string;
+  geographyType: string;
+}): string {
+  return [
+    tuple.seriesKey,
+    tuple.category,
+    tuple.locationKey,
+    tuple.sourceId,
+    tuple.contextRole,
+    tuple.granularity,
+    tuple.geographyType,
+  ].join("|");
+}
+
+const CONSUMER_V2_TUPLE_SIGNATURES = new Set(
+  CONSUMER_V2_TUPLES.map(tupleSignature),
+);
 
 const ConsumerV2SourceBaseSchema = z
   .object({
@@ -215,6 +379,60 @@ export const ConsumerV2PayloadSchema: z.ZodType<ConsumerV2Payload> =
         message: "sources_must_be_exact_sorted_pair",
         path: ["sources"],
       });
+    }
+
+    if (value.observations.length !== 360) {
+      context.addIssue({
+        code: "custom",
+        message: `consumer_v2_observation_count_invalid:${String(value.observations.length)}`,
+        path: ["observations"],
+      });
+    }
+
+    const periodsByTuple = new Map<string, Set<string>>(
+      CONSUMER_V2_TUPLES.map((tuple) => [tupleSignature(tuple), new Set<string>()]),
+    );
+    const tuplePeriods = new Set<string>();
+    value.observations.forEach((observation, index) => {
+      const signature = tupleSignature({
+        category: observation.category,
+        locationKey: observation.location_key,
+        seriesKey: observation.series_key,
+        sourceId: observation.source_id,
+        contextRole: observation.context_role,
+        granularity: observation.granularity,
+        geographyType: observation.geography_type,
+      });
+      if (!CONSUMER_V2_TUPLE_SIGNATURES.has(signature)) {
+        context.addIssue({
+          code: "custom",
+          message: "consumer_v2_observation_tuple_invalid",
+          path: ["observations", index],
+        });
+        return;
+      }
+
+      const tuplePeriod = `${signature}|${observation.period_start}`;
+      if (tuplePeriods.has(tuplePeriod)) {
+        context.addIssue({
+          code: "custom",
+          message: "consumer_v2_tuple_period_revision_duplicate",
+          path: ["observations", index, "revision_number"],
+        });
+      }
+      tuplePeriods.add(tuplePeriod);
+      periodsByTuple.get(signature)?.add(observation.period_start);
+    });
+
+    for (const tuple of CONSUMER_V2_TUPLES) {
+      const periodCount = periodsByTuple.get(tupleSignature(tuple))?.size ?? 0;
+      if (periodCount !== 24) {
+        context.addIssue({
+          code: "custom",
+          message: `consumer_v2_tuple_period_count_invalid:${tuple.category}|${tuple.locationKey}:${String(periodCount)}`,
+          path: ["observations"],
+        });
+      }
     }
 
     const observationKeys = value.observations.map(

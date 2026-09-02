@@ -19,11 +19,10 @@ import {
   CONSUMER_CONTRACT,
   CONSUMER_PROFILE,
   CONSUMER_V2_CONTRACT,
-  CONSUMER_V2_PROFILE,
   ConsumerPayloadSchema,
-  ConsumerV2PayloadSchema,
   SCHEMA_VERSION,
   type ConsumerPayload,
+  type ConsumerV2Index,
   type ConsumerV2Payload,
 } from "@data-hub/contracts";
 import {
@@ -31,6 +30,11 @@ import {
   writeConsumerBundle,
   type CreatedConsumerBundle,
 } from "@data-hub/adapters";
+
+import {
+  compareConsumerV2FixtureObservations,
+  consumerV2PayloadFixture,
+} from "./consumer-v2-fixture.js";
 
 const SNAPSHOT_ID = "9d3b77bbfc0cf05cbc0f2e27f24cfb0b348ce0e5d71b09267fbd7ce67657e226";
 const SNAPSHOT_TAG = "data-20260827T095123Z-9d3b77bbfc0c";
@@ -108,68 +112,10 @@ function payload(): ConsumerPayload {
 }
 
 function payloadV2(): ConsumerV2Payload {
-  return ConsumerV2PayloadSchema.parse({
-    schema_version: SCHEMA_VERSION,
-    consumer_contract: CONSUMER_V2_CONTRACT,
-    source_snapshot_tag: SNAPSHOT_TAG,
-    source_snapshot_id: SNAPSHOT_ID,
-    generated_at: GENERATED_AT,
-    profile_id: CONSUMER_V2_PROFILE,
-    contains_confidential_data: false,
-    decision_scope: "observation_only",
-    coverage_start: "2024-10-01",
-    coverage_end: "2024-11-30",
-    sources: [
-      {
-        source_id: "hcp-ipc-2017-monthly",
-        publisher_name: "Haut-Commissariat au Plan",
-        official_base_url: "https://www.hcp.ma/",
-        licence_id: "ODbL-1.0",
-        licence_evidence_url: "https://data.gov.ma/data/fr/dataset/data_7_5",
-        health_status: "stale",
-        retrieved_at: GENERATED_AT,
-        last_period_end: "2024-11-30",
-        warning_age_days: 60,
-        expiry_age_days: 120,
-        age_days_at_snapshot: 635,
-        warning_codes: ["source_stale"],
-      },
-      {
-        source_id: "hcp-ipc-2017-official-g1-monthly",
-        publisher_name: "Haut-Commissariat au Plan",
-        official_base_url:
-          "https://www.hcp.ma/Indices-des-prix-a-la-consommation-IPC_r348.html",
-        licence_id: "CC-BY-4.0",
-        licence_evidence_url:
-          "https://www.hcp.ma/Conditions-generales-d-utilisation-Version-1-0_a2194.html",
-        health_status: "healthy",
-        retrieved_at: GENERATED_AT,
-        last_period_end: "2026-07-31",
-        warning_age_days: 60,
-        expiry_age_days: 120,
-        age_days_at_snapshot: 27,
-        warning_codes: [],
-      },
-    ],
-    observations: [
-      {
-        ...observation("hcp.ipc2017.01", "ma", "2024-10-01", "2024-10-31"),
-        source_id: "hcp-ipc-2017-official-g1-monthly",
-        context_role: "fresh_national_context",
-        granularity: "division",
-      },
-      {
-        ...observation(
-          "hcp.ipc2017.0111",
-          "ma:city:tetouan",
-          "2024-11-01",
-          "2024-11-30",
-        ),
-        category: "bread_cereals",
-        context_role: "historical_detailed_context",
-        granularity: "group_of_products",
-      },
-    ],
+  return consumerV2PayloadFixture({
+    snapshotId: SNAPSHOT_ID,
+    snapshotTag: SNAPSHOT_TAG,
+    generatedAt: GENERATED_AT,
   });
 }
 
@@ -211,6 +157,53 @@ function verificationInput(created: CreatedConsumerBundle) {
     payloadPath: created.payloadPath,
     checksumPath: created.checksumPath,
   };
+}
+
+async function rewriteSignedV2Bundle(input: {
+  created: CreatedConsumerBundle;
+  mutateIndex?: (index: ConsumerV2Index) => ConsumerV2Index;
+  mutatePayload?: (payload: ConsumerV2Payload) => ConsumerV2Payload;
+  synchronizeIndexFromPayload?: boolean;
+}): Promise<void> {
+  const originalPayload = JSON.parse(
+    await readFile(input.created.payloadPath, "utf8"),
+  ) as ConsumerV2Payload;
+  const mutatedPayload = input.mutatePayload?.(originalPayload) ?? originalPayload;
+  const payloadBytes = Buffer.from(`${canonicalJson(mutatedPayload)}\n`);
+  const payloadSha256 = sha256Hex(payloadBytes);
+  const originalIndex = input.created.index as ConsumerV2Index;
+  const synchronizedFields = input.synchronizeIndexFromPayload === false
+    ? {}
+    : {
+        source_snapshot_tag: mutatedPayload.source_snapshot_tag,
+        source_snapshot_id: mutatedPayload.source_snapshot_id,
+        created_at: mutatedPayload.generated_at,
+        coverage_start: mutatedPayload.coverage_start,
+        coverage_end: mutatedPayload.coverage_end,
+        source_ids: mutatedPayload.sources.map((source) => source.source_id),
+        indicator_count: new Set(
+          mutatedPayload.observations.map((row) => row.series_key),
+        ).size,
+        observation_count: mutatedPayload.observations.length,
+      };
+  const synchronizedIndex: ConsumerV2Index = {
+    ...originalIndex,
+    ...synchronizedFields,
+    payload: {
+      ...originalIndex.payload,
+      byte_length: payloadBytes.byteLength,
+      sha256: payloadSha256,
+    },
+  };
+  const mutatedIndex = input.mutateIndex?.(synchronizedIndex) ?? synchronizedIndex;
+  await Promise.all([
+    writeFile(input.created.payloadPath, payloadBytes),
+    writeFile(input.created.indexPath, `${canonicalJson(mutatedIndex)}\n`),
+    writeFile(
+      input.created.checksumPath,
+      `${payloadSha256}  consumer-v2.json\n`,
+    ),
+  ]);
 }
 
 void test("writes and verifies exactly three canonical consumer assets", async (t) => {
@@ -283,6 +276,151 @@ void test("writes and verifies exactly three canonical v2 consumer assets", asyn
     created.index,
   );
 });
+
+void test("v2 writer rejects incomplete and out-of-matrix payloads", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "consumer-v2-invalid-write-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const complete = payloadV2();
+  const invented = complete.observations.map((row, index) =>
+    index === 24 ? { ...row, series_key: "hcp.ipc2017.0112" } : row,
+  ).sort(compareConsumerV2FixtureObservations);
+
+  await assert.rejects(
+    () => writeConsumerBundle({
+      outputDir: join(root, "incomplete"),
+      payload: { ...complete, observations: complete.observations.slice(0, -1) },
+      codeSha: CODE_SHA,
+    }),
+    /consumer_v2_observation_count_invalid/,
+  );
+  await assert.rejects(
+    () => writeConsumerBundle({
+      outputDir: join(root, "out-of-matrix"),
+      payload: { ...complete, observations: invented },
+      codeSha: CODE_SHA,
+    }),
+    /consumer_v2_observation_tuple_invalid/,
+  );
+});
+
+void test("v2 verifier rejects self-consistent signed incomplete and out-of-matrix bundles", async (t) => {
+  const incomplete = await createV2Bundle(t);
+  await rewriteSignedV2Bundle({
+    created: incomplete.created,
+    mutatePayload: (value) => ({
+      ...value,
+      observations: value.observations.slice(0, -1),
+    }),
+  });
+  await assert.rejects(
+    () => verifyConsumerBundle(verificationInput(incomplete.created)),
+    /invalid_consumer_payload/,
+  );
+
+  const outOfMatrix = await createV2Bundle(t);
+  await rewriteSignedV2Bundle({
+    created: outOfMatrix.created,
+    mutatePayload: (value) => ({
+      ...value,
+      observations: value.observations.map((row, index) =>
+        index === 24 ? { ...row, series_key: "hcp.ipc2017.0112" } : row,
+      ).sort(compareConsumerV2FixtureObservations),
+    }),
+  });
+  await assert.rejects(
+    () => verifyConsumerBundle(verificationInput(outOfMatrix.created)),
+    /invalid_consumer_payload/,
+  );
+});
+
+const V2_CROSS_FILE_MUTATIONS: ReadonlyArray<{
+  name: string;
+  expected: RegExp;
+  mutateIndex?: (index: ConsumerV2Index) => ConsumerV2Index;
+  mutatePayload?: (payload: ConsumerV2Payload) => ConsumerV2Payload;
+}> = [
+  {
+    name: "index source tag",
+    expected: /consumer_snapshot_identity_mismatch/,
+    mutateIndex: (value) => ({
+      ...value,
+      source_snapshot_tag: "data-20260828T095123Z-9d3b77bbfc0c",
+    }),
+  },
+  {
+    name: "index snapshot id",
+    expected: /consumer_snapshot_identity_mismatch/,
+    mutateIndex: (value) => ({
+      ...value,
+      source_snapshot_id: `9d3b77bbfc0c${"f".repeat(52)}`,
+    }),
+  },
+  {
+    name: "index created at",
+    expected: /consumer_index_payload_mismatch/,
+    mutateIndex: (value) => ({
+      ...value,
+      created_at: "2026-08-28T09:51:23.000Z",
+    }),
+  },
+  {
+    name: "payload generated at",
+    expected: /consumer_index_payload_mismatch/,
+    mutatePayload: (value) => ({
+      ...value,
+      generated_at: "2026-08-28T09:51:23.000Z",
+    }),
+  },
+  {
+    name: "index coverage start",
+    expected: /consumer_index_payload_mismatch/,
+    mutateIndex: (value) => ({ ...value, coverage_start: "2023-02-01" }),
+  },
+  {
+    name: "index coverage end",
+    expected: /consumer_index_payload_mismatch/,
+    mutateIndex: (value) => ({ ...value, coverage_end: "2026-07-31" }),
+  },
+  {
+    name: "index source ids",
+    expected: /invalid_consumer_index/,
+    mutateIndex: (value) => ({
+      ...value,
+      source_ids: [...value.source_ids].reverse(),
+    }),
+  },
+  {
+    name: "index indicator count",
+    expected: /consumer_index_payload_mismatch/,
+    mutateIndex: (value) => ({ ...value, indicator_count: 4 }),
+  },
+  {
+    name: "index observation count",
+    expected: /consumer_index_payload_mismatch/,
+    mutateIndex: (value) => ({ ...value, observation_count: 359 }),
+  },
+];
+
+for (const invalidCase of V2_CROSS_FILE_MUTATIONS) {
+  void test(`v2 verifier rejects independent ${invalidCase.name} mutation`, async (t) => {
+    const bundle = await createV2Bundle(t);
+    await rewriteSignedV2Bundle({
+      created: bundle.created,
+      ...(invalidCase.mutateIndex === undefined
+        ? {}
+        : { mutateIndex: invalidCase.mutateIndex }),
+      ...(invalidCase.mutatePayload === undefined
+        ? {}
+        : { mutatePayload: invalidCase.mutatePayload }),
+      synchronizeIndexFromPayload: false,
+    });
+
+    await assert.rejects(
+      () => verifyConsumerBundle(verificationInput(bundle.created)),
+      invalidCase.expected,
+    );
+  });
+}
 
 void test("detects corrupted v2 payload bytes", async (t) => {
   const { created } = await createV2Bundle(t);

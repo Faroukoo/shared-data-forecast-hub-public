@@ -7,10 +7,7 @@ import test, { type TestContext } from "node:test";
 import {
   CONSUMER_CONTRACT,
   CONSUMER_PROFILE,
-  CONSUMER_V2_CONTRACT,
-  CONSUMER_V2_PROFILE,
   ConsumerPayloadSchema,
-  ConsumerV2PayloadSchema,
   SCHEMA_VERSION,
   SnapshotIndexSchema,
   type ConsumerPayload,
@@ -21,6 +18,7 @@ import { writeConsumerBundle } from "@data-hub/adapters";
 
 import { executeConsumerCommand } from "../apps/ingest-cli/src/consumer-command.js";
 import { main } from "../apps/ingest-cli/src/index.js";
+import { consumerV2PayloadFixture } from "./consumer-v2-fixture.js";
 
 const SNAPSHOT_ID = `9d3b77bbfc0c${"a".repeat(52)}`;
 const SNAPSHOT_TAG = "data-20260827T095123Z-9d3b77bbfc0c";
@@ -113,48 +111,10 @@ function payload(): ConsumerPayload {
 }
 
 function payloadV2(): ConsumerV2Payload {
-  const legacySource = payload().sources[0];
-  const historicalObservation = payload().observations[0];
-  assert.ok(legacySource);
-  assert.ok(historicalObservation);
-  return ConsumerV2PayloadSchema.parse({
-    schema_version: SCHEMA_VERSION,
-    consumer_contract: CONSUMER_V2_CONTRACT,
-    source_snapshot_tag: SNAPSHOT_TAG,
-    source_snapshot_id: SNAPSHOT_ID,
-    generated_at: CREATED_AT,
-    profile_id: CONSUMER_V2_PROFILE,
-    contains_confidential_data: false,
-    decision_scope: "observation_only",
-    coverage_start: "2024-11-01",
-    coverage_end: "2026-07-31",
-    sources: [
-      legacySource,
-      {
-        source_id: "hcp-ipc-2017-official-g1-monthly",
-        publisher_name: "Haut-Commissariat au Plan",
-        official_base_url:
-          "https://www.hcp.ma/Indices-des-prix-a-la-consommation-IPC_r348.html",
-        licence_id: "CC-BY-4.0",
-        licence_evidence_url:
-          "https://www.hcp.ma/Conditions-generales-d-utilisation-Version-1-0_a2194.html",
-        health_status: "healthy",
-        retrieved_at: CREATED_AT,
-        last_period_end: "2026-07-31",
-        warning_age_days: 60,
-        expiry_age_days: 120,
-        age_days_at_snapshot: 27,
-        warning_codes: [],
-      },
-    ],
-    observations: [
-      {
-        ...historicalObservation,
-        source_id: "hcp-ipc-2017-official-g1-monthly",
-        context_role: "fresh_national_context",
-        granularity: "division",
-      },
-    ],
+  return consumerV2PayloadFixture({
+    snapshotId: SNAPSHOT_ID,
+    snapshotTag: SNAPSHOT_TAG,
+    generatedAt: CREATED_AT,
   });
 }
 

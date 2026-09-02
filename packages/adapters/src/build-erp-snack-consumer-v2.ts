@@ -327,7 +327,7 @@ function projectWithSourceTag(input: {
         label_fr: profile.labelFr,
         category: tuple.category,
         usage: "macro_context_only",
-        geography_type: tuple.locationKey === "ma" ? "country" : "city",
+        geography_type: tuple.geographyType,
         location_key: tuple.locationKey,
         period_start: row.period_start,
         period_end: row.period_end,

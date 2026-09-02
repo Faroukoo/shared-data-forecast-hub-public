@@ -47,21 +47,21 @@ const LEGACY_SOURCE_ID = "hcp-ipc-2017-monthly" as const;
 const OFFICIAL_SOURCE_ID = "hcp-ipc-2017-official-g1-monthly" as const;
 
 const EXPECTED_TUPLES = [
-  ["food_overall", "ma", "hcp.ipc2017.01", OFFICIAL_SOURCE_ID, "fresh_national_context", "division"],
-  ["food_overall", "ma:city:al-hoceima", "hcp.ipc2017.01", LEGACY_SOURCE_ID, "historical_detailed_context", "division"],
-  ["food_overall", "ma:city:tetouan", "hcp.ipc2017.01", LEGACY_SOURCE_ID, "historical_detailed_context", "division"],
-  ["bread_cereals", "ma", "hcp.ipc2017.0111", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["bread_cereals", "ma:city:al-hoceima", "hcp.ipc2017.0111", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["bread_cereals", "ma:city:tetouan", "hcp.ipc2017.0111", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["fish_seafood", "ma", "hcp.ipc2017.0113", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["fish_seafood", "ma:city:al-hoceima", "hcp.ipc2017.0113", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["fish_seafood", "ma:city:tetouan", "hcp.ipc2017.0113", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["oils_fats", "ma", "hcp.ipc2017.0115", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["oils_fats", "ma:city:al-hoceima", "hcp.ipc2017.0115", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["oils_fats", "ma:city:tetouan", "hcp.ipc2017.0115", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["vegetables", "ma", "hcp.ipc2017.0117", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["vegetables", "ma:city:al-hoceima", "hcp.ipc2017.0117", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
-  ["vegetables", "ma:city:tetouan", "hcp.ipc2017.0117", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products"],
+  ["food_overall", "ma", "hcp.ipc2017.01", OFFICIAL_SOURCE_ID, "fresh_national_context", "division", "country"],
+  ["food_overall", "ma:city:al-hoceima", "hcp.ipc2017.01", LEGACY_SOURCE_ID, "historical_detailed_context", "division", "city"],
+  ["food_overall", "ma:city:tetouan", "hcp.ipc2017.01", LEGACY_SOURCE_ID, "historical_detailed_context", "division", "city"],
+  ["bread_cereals", "ma", "hcp.ipc2017.0111", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "country"],
+  ["bread_cereals", "ma:city:al-hoceima", "hcp.ipc2017.0111", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["bread_cereals", "ma:city:tetouan", "hcp.ipc2017.0111", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["fish_seafood", "ma", "hcp.ipc2017.0113", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "country"],
+  ["fish_seafood", "ma:city:al-hoceima", "hcp.ipc2017.0113", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["fish_seafood", "ma:city:tetouan", "hcp.ipc2017.0113", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["oils_fats", "ma", "hcp.ipc2017.0115", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "country"],
+  ["oils_fats", "ma:city:al-hoceima", "hcp.ipc2017.0115", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["oils_fats", "ma:city:tetouan", "hcp.ipc2017.0115", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["vegetables", "ma", "hcp.ipc2017.0117", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "country"],
+  ["vegetables", "ma:city:al-hoceima", "hcp.ipc2017.0117", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["vegetables", "ma:city:tetouan", "hcp.ipc2017.0117", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
 ] as const;
 
 type RequiredSourceId = typeof LEGACY_SOURCE_ID | typeof OFFICIAL_SOURCE_ID;
@@ -230,6 +230,7 @@ void test("defines the literal fifteen-cell matrix with one official national fo
       tuple.sourceId,
       tuple.contextRole,
       tuple.granularity,
+      tuple.geographyType,
     ]),
     EXPECTED_TUPLES,
   );
@@ -247,6 +248,14 @@ void test("defines the literal fifteen-cell matrix with one official national fo
     ERP_SNACK_V2_TUPLES.filter((tuple) => tuple.sourceId === LEGACY_SOURCE_ID).length,
     14,
   );
+});
+
+void test("adapter exposes the contract-owned v2 tuple table without a drifting copy", async () => {
+  const contracts = await import("@data-hub/contracts") as unknown as {
+    CONSUMER_V2_TUPLES?: unknown;
+  };
+
+  assert.equal(ERP_SNACK_V2_TUPLES, contracts.CONSUMER_V2_TUPLES);
 });
 
 void test("projects the latest 24 observations for every exact tuple", () => {

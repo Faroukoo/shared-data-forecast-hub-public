@@ -61,6 +61,7 @@ export {
 export {
   CONSUMER_V2_CONTRACT,
   CONSUMER_V2_PROFILE,
+  CONSUMER_V2_TUPLES,
   ConsumerV2IndexSchema,
   ConsumerV2ObservationSchema,
   ConsumerV2PayloadSchema,
@@ -69,4 +70,5 @@ export {
   type ConsumerV2Observation,
   type ConsumerV2Payload,
   type ConsumerV2Source,
+  type ConsumerV2Tuple,
 } from "./consumer-v2.js";
