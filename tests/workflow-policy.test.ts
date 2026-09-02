@@ -159,6 +159,11 @@ void test("consumer releases run only from explicit dispatch or trusted refresh 
     record(inputs.source_release_tag, "source_release_tag").required,
     true,
   );
+  const contractVersion = record(inputs.contract_version, "contract_version");
+  assert.equal(contractVersion.type, "choice");
+  assert.deepEqual(contractVersion.options, ["v1", "v2"]);
+  assert.equal(contractVersion.default, "v1");
+  assert.equal(contractVersion.required, true);
 
   const workflowRun = record(triggers.workflow_run, "workflow_run");
   assert.deepEqual(workflowRun.workflows, ["Verified public data refresh"]);
@@ -234,7 +239,7 @@ void test("consumer jobs restore and verify one exact three-asset data release i
     assert.match(jobCommands, /gh api --paginate --slurp/);
     assert.match(
       jobCommands,
-      /const consumerTagPattern = \/\^consumer-v1-/,
+      /const consumerTagPattern = new RegExp\(consumerTagPatternSource\)/,
     );
     assert.doesNotMatch(jobCommands, /\.\/\.data-hub|\$GITHUB_WORKSPACE\/.data-hub/);
   }
@@ -276,6 +281,69 @@ void test("consumer jobs pass their validated selected tag to the consumer CLI",
     commands(consumerJobs.publish),
     /--source-tag "\$source_tag"/,
   );
+});
+
+void test("consumer jobs derive their contract assets from a closed version choice before GitHub access", async () => {
+  const workflow = await loadWorkflow(CONSUMER_PATH);
+  const consumerJobs = jobs(workflow);
+
+  for (const jobName of ["verify", "publish"]) {
+    const jobCommands = commands(consumerJobs[jobName]);
+    assert.match(jobCommands, /case "\$contract_version" in/);
+    assert.match(
+      jobCommands,
+      /v1\)[\s\S]*payload_name="consumer-v1\.json"[\s\S]*checksum_name="consumer-v1\.json\.sha256"[\s\S]*consumer_tag_prefix="consumer-v1"/,
+    );
+    assert.match(
+      jobCommands,
+      /v2\)[\s\S]*payload_name="consumer-v2\.json"[\s\S]*checksum_name="consumer-v2\.json\.sha256"[\s\S]*consumer_tag_prefix="consumer-v2"/,
+    );
+    assert.match(jobCommands, /\*\)[\s\S]*exit 4/);
+    assert.match(jobCommands, /--contract-version "\$contract_version"/);
+    assert.match(jobCommands, /--payload "\$bundle_dir\/\$payload_name"/);
+    assert.match(jobCommands, /--checksum "\$bundle_dir\/\$checksum_name"/);
+    assert.match(
+      jobCommands,
+      /const expected = \["consumer-index\.json", payloadName, checksumName\]/,
+    );
+    assert.ok(jobCommands.indexOf('case "$contract_version" in') < jobCommands.indexOf("gh api"));
+    assert.doesNotMatch(jobCommands, /actions\/(?:upload-artifact|cache)/);
+  }
+});
+
+void test("consumer v2 is manual candidate-only while automatic stable publication remains v1", async () => {
+  const workflow = await loadWorkflow(CONSUMER_PATH);
+  const publishJob = record(jobs(workflow).publish, "publish");
+  const publishEnvironment = record(
+    steps(publishJob).find((step) => typeof step.run === "string" && step.run.includes("gh release create"))?.env,
+    "publish.env",
+  );
+  assert.equal(
+    publishEnvironment.REQUESTED_CONTRACT_VERSION,
+    "${{ inputs.contract_version }}",
+  );
+
+  const publishCommands = commands(publishJob);
+  assert.match(
+    publishCommands,
+    /operation="manual"[\s\S]*contract_version="\$REQUESTED_CONTRACT_VERSION"/,
+  );
+  assert.match(
+    publishCommands,
+    /operation="automatic"[\s\S]*contract_version="v1"/,
+  );
+  assert.match(
+    publishCommands,
+    /\[ "\$contract_version" = "v2" \] && \[ "\$operation" != "manual" \]/,
+  );
+  assert.match(
+    publishCommands,
+    /if \[ "\$operation" = "manual" \]; then[\s\S]*release_flags\+=\(--prerelease\)/,
+  );
+  const stableV1Guard = publishCommands.indexOf('test "$contract_version" = "v1"');
+  const promotion = publishCommands.indexOf("gh api --method PATCH");
+  assert.ok(stableV1Guard >= 0);
+  assert.ok(promotion > stableV1Guard);
 });
 
 void test("consumer publication is immutable, bounded to three assets and candidate-first", async () => {
