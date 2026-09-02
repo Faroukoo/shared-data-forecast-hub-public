@@ -271,6 +271,54 @@ void test("consumer v2 binds each observation role to its required source", () =
   );
 });
 
+void test("consumer v2 requires the exact national food tuple to use official fresh context", () => {
+  const payload = validPayload();
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({
+      ...payload,
+      observations: [
+        {
+          ...payload.observations[0],
+          source_id: "hcp-ipc-2017-monthly",
+          context_role: "historical_detailed_context",
+        },
+        ...payload.observations.slice(1),
+      ],
+    }),
+    /fresh_national_context_observation_mismatch/,
+  );
+});
+
+void test("consumer v2 rejects a city location marked as country geography", () => {
+  const payload = validPayload();
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({
+      ...payload,
+      observations: payload.observations.map((row, index) =>
+        index === 1 ? { ...row, geography_type: "country" } : row,
+      ),
+    }),
+    /geography_type_location_mismatch/,
+  );
+});
+
+void test("consumer v2 rejects the fresh national location marked as city geography", () => {
+  const payload = validPayload();
+
+  assert.throws(
+    () => ConsumerV2PayloadSchema.parse({
+      ...payload,
+      observations: [
+        { ...payload.observations[0], geography_type: "city" },
+        ...payload.observations.slice(1),
+      ],
+    }),
+    /geography_type_location_mismatch/,
+  );
+});
+
 void test("consumer v2 rejects invalid context role and granularity combinations", () => {
   const payload = validPayload();
 
@@ -292,6 +340,24 @@ void test("consumer v2 rejects invalid context role and granularity combinations
       ),
     }),
     /fresh_national_context_observation_mismatch/,
+  );
+});
+
+void test("consumer v2 observation order uses code units for non-ASCII series", () => {
+  const payload = validPayload();
+  const detailed = payload.observations[3];
+
+  const parsed = ConsumerV2PayloadSchema.parse({
+    ...payload,
+    observations: [
+      { ...detailed, series_key: "hcp.ipc2017.z" },
+      { ...detailed, series_key: "hcp.ipc2017.é" },
+    ],
+  });
+
+  assert.deepEqual(
+    parsed.observations.map((row) => row.series_key),
+    ["hcp.ipc2017.z", "hcp.ipc2017.é"],
   );
 });
 
@@ -335,6 +401,21 @@ void test("consumer v2 index is strict and requires its exact source pair and de
     }),
     /source_ids_must_be_exact_sorted_pair/,
   );
+});
+
+void test("consumer v2 index rejects v1 and widened public-boundary literals", () => {
+  assert.throws(() => ConsumerV2IndexSchema.parse({
+    ...validIndex(),
+    consumer_contract: "erp-snack-observation-v1",
+  }));
+  assert.throws(() => ConsumerV2IndexSchema.parse({
+    ...validIndex(),
+    contains_confidential_data: true,
+  }));
+  assert.throws(() => ConsumerV2IndexSchema.parse({
+    ...validIndex(),
+    decision_scope: "observation_and_recommendation",
+  }));
 });
 
 void test("consumer v2 payload and index bind the source tag to the snapshot id", () => {

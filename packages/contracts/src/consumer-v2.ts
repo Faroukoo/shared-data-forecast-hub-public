@@ -98,13 +98,16 @@ export type ConsumerV2Observation = z.infer<
 
 export const ConsumerV2ObservationSchema: z.ZodType<ConsumerV2Observation> =
   ConsumerV2ObservationBaseSchema.superRefine((value, context) => {
-    if (value.context_role === "fresh_national_context") {
+    const isFreshNationalTuple =
+      value.category === "food_overall" &&
+      value.location_key === "ma" &&
+      value.series_key === "hcp.ipc2017.01";
+
+    if (isFreshNationalTuple) {
       if (
         value.source_id !== "hcp-ipc-2017-official-g1-monthly" ||
-        value.category !== "food_overall" ||
-        value.location_key !== "ma" ||
-        value.series_key !== "hcp.ipc2017.01" ||
-        value.granularity !== "division"
+        value.context_role !== "fresh_national_context" ||
+        value.geography_type !== "country"
       ) {
         context.addIssue({
           code: "custom",
@@ -112,11 +115,31 @@ export const ConsumerV2ObservationSchema: z.ZodType<ConsumerV2Observation> =
           path: ["context_role"],
         });
       }
-    } else if (value.source_id !== "hcp-ipc-2017-monthly") {
+    } else {
+      if (value.source_id !== "hcp-ipc-2017-monthly") {
+        context.addIssue({
+          code: "custom",
+          message: "historical_detailed_context_observation_mismatch",
+          path: ["context_role"],
+        });
+      }
+      if (value.context_role !== "historical_detailed_context") {
+        context.addIssue({
+          code: "custom",
+          message: "fresh_national_context_observation_mismatch",
+          path: ["context_role"],
+        });
+      }
+    }
+
+    if (
+      (value.location_key === "ma" && value.geography_type !== "country") ||
+      (value.location_key !== "ma" && value.geography_type !== "city")
+    ) {
       context.addIssue({
         code: "custom",
-        message: "historical_detailed_context_observation_mismatch",
-        path: ["context_role"],
+        message: "geography_type_location_mismatch",
+        path: ["geography_type"],
       });
     }
 
