@@ -56,6 +56,7 @@ const profiles = [
       "Articles d'habillement et chaussures",
       "Logement, eau, gaz, électricité et autres combustibles",
       "Meubles, articles de ménage et entretien courant du foyer",
+      "Santé",
     ],
     keys: [
       "hcp.ipc2017.01",
@@ -63,6 +64,7 @@ const profiles = [
       "hcp.ipc2017.03",
       "hcp.ipc2017.04",
       "hcp.ipc2017.05",
+      "hcp.ipc2017.06",
     ],
     baseYear: 2017,
   },
@@ -75,6 +77,7 @@ const profiles = [
       "Loisirs et culture",
       "Enseignement",
       "Restaurants et hôtels",
+      "Biens et services divers",
     ],
     keys: [
       "hcp.ipc2017.07",
@@ -82,6 +85,7 @@ const profiles = [
       "hcp.ipc2017.09",
       "hcp.ipc2017.10",
       "hcp.ipc2017.11",
+      "hcp.ipc2017.12",
     ],
     baseYear: 2017,
   },
@@ -96,6 +100,7 @@ const profiles = [
       "Industrie d'habillement",
       "Industrie de cuir et de la chaussure",
       "Travail du bois et fabrication d'articles en bois",
+      "Industrie du papier et du carton",
     ],
     keys: [
       "hcp.ipp2018.industries-alimentaires",
@@ -105,6 +110,7 @@ const profiles = [
       "hcp.ipp2018.industrie-d-habillement",
       "hcp.ipp2018.industrie-de-cuir-et-de-la-chaussure",
       "hcp.ipp2018.travail-du-bois-et-fabrication-d-articles-en-bois",
+      "hcp.ipp2018.industrie-du-papier-et-du-carton",
     ],
     baseYear: 2018,
   },
@@ -118,6 +124,7 @@ const profiles = [
       "Industrie pharmaceutique",
       "Fabrication de produits en caoutchouc et en plastique",
       "Fabrication d'autres produits minéraux non métalliques",
+      "Métallurgie",
     ],
     keys: [
       "hcp.ipp2018.imprimerie-et-reproduction-d-enregistrement",
@@ -126,6 +133,7 @@ const profiles = [
       "hcp.ipp2018.industrie-pharmaceutique",
       "hcp.ipp2018.fabrication-de-produits-en-caoutchouc-et-en-plastique",
       "hcp.ipp2018.fabrication-d-autres-produits-mineraux-non-metalliques",
+      "hcp.ipp2018.metallurgie",
     ],
     baseYear: 2018,
   },
@@ -140,6 +148,7 @@ const profiles = [
       "Industrie automobile",
       "Fabrication d'autres matériels de transport",
       "fabrication de meubles",
+      "Autres industries manufacturés",
     ],
     keys: [
       "hcp.ipp2018.fabrication-de-produits-metalliques",
@@ -149,6 +158,7 @@ const profiles = [
       "hcp.ipp2018.industrie-automobile",
       "hcp.ipp2018.fabrication-d-autres-materiels-de-transport",
       "hcp.ipp2018.fabrication-de-meubles",
+      "hcp.ipp2018.autres-industries-manufactures",
     ],
     baseYear: 2018,
   },
@@ -243,13 +253,14 @@ void test("normalizes IPC string periods, decimals and cell provenance", async (
   assert.equal(parsed.observations.at(-1)?.period_end, "2026-08-31");
 });
 
-void test("normalizes IPPI Excel dates and omits only the refining dash", async () => {
+void test("normalizes mixed IPPI Excel dates and strict strings", async () => {
   const parsed = await parseProfile(profiles[3]);
   const firstObservation = parsed.observations[0];
   assert.ok(firstObservation);
   assert.equal(firstObservation.source_row, 23);
   assert.equal(firstObservation.source_column, 3);
   assert.equal(firstObservation.period_start, "2026-07-01");
+  assert.equal(parsed.observations.at(-1)?.period_start, "2026-06-01");
   assert.equal(
     parsed.observations.some(
       (row) =>
@@ -264,6 +275,25 @@ void test("normalizes IPPI Excel dates and omits only the refining dash", async 
     ),
     true,
   );
+});
+
+void test("fails closed when one published value cell is blank", async () => {
+  const parsed = await parseProfile(profiles[0], { blankFirstValue: true });
+
+  assert.equal(parsed.parser_errors.includes("unexpected_value:25:3"), true);
+});
+
+void test("fails closed when the official footer is absent", async () => {
+  const parsed = await parseProfile(profiles[0], { omitFooter: true });
+
+  assert.equal(parsed.parser_errors.includes("missing_footer"), true);
+});
+
+void test("accepts supplier layout padding around the exact official footer", async () => {
+  const parsed = await parseProfile(profiles[0], { paddedFooter: true });
+
+  assert.deepEqual(parsed.parser_errors, []);
+  assert.equal(parsed.observations.length > 0, true);
 });
 
 void test("rejects a padded label instead of normalizing published provenance", async () => {
@@ -334,7 +364,7 @@ void test("rejects one sparse appended cell without dense row access", async (t)
     parsed.parser_errors.filter((error) =>
       error.startsWith("unexpected_appended_cell:"),
     ),
-    [`unexpected_appended_cell:${String(sparseRow)}:8`],
+    [`unexpected_appended_cell:${String(sparseRow)}:9`],
   );
   assert.deepEqual(parsed.observations, []);
   assert.equal(getRow.mock.callCount() < 100, true);
@@ -365,7 +395,7 @@ void test("accepts a sparse styled empty cell without dense row access", async (
   });
 
   assert.deepEqual(parsed.parser_errors, []);
-  assert.equal(parsed.observations.length, 10);
+  assert.equal(parsed.observations.length, 12);
   assert.equal(getRow.mock.callCount() < 100, true);
 });
 

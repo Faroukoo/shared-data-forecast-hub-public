@@ -24,6 +24,7 @@ import {
   type RawArtifact,
   type SourceDefinition,
 } from "@data-hub/contracts";
+import { canonicalJson } from "@data-hub/canonical";
 import {
   assessFreshness,
   assessPeriodFreshness,
@@ -45,6 +46,11 @@ export interface RunProductionOptions {
     dataDir: string,
     runId: string,
   ) => Promise<QualityReport | null>;
+  loadDataset?: (
+    dataDir: string,
+    sourceId: string,
+    datasetId: string,
+  ) => Promise<DatasetVersion>;
 }
 
 export interface WriteProductionOutputsInput {
@@ -110,8 +116,21 @@ async function loadVerifiedDatasetFromDisk(
   const manifest = DatasetVersionSchema.parse(
     JSON.parse(await readFile(join(directory, "manifest.json"), "utf8")),
   );
+  const {
+    dataset_id: ignoredDatasetId,
+    created_at: ignoredCreatedAt,
+    ...stableManifest
+  } = manifest;
+  void ignoredDatasetId;
+  void ignoredCreatedAt;
+  const expectedDatasetId = `sha256:${createHash("sha256")
+    .update(canonicalJson(stableManifest))
+    .digest("hex")}`;
   if (manifest.dataset_id !== datasetId || manifest.source_id !== sourceId) {
     throw new Error(`dataset_evidence_mismatch:${datasetId}`);
+  }
+  if (expectedDatasetId !== datasetId) {
+    throw new Error(`dataset_identity_mismatch:${datasetId}`);
   }
 
   const observationsBytes = await readFile(join(directory, "observations.jsonl"));
@@ -264,17 +283,9 @@ async function summarizeRun(input: {
   run: IngestionRun;
   loadArtifact: NonNullable<RunProductionOptions["loadArtifact"]>;
   loadQuality: NonNullable<RunProductionOptions["loadQuality"]>;
+  loadDataset: NonNullable<RunProductionOptions["loadDataset"]>;
 }): Promise<ProductionSourceResult> {
   const currentReport = await input.loadQuality(input.dataDir, input.run.run_id);
-  if (currentReport) {
-    return resultFromQuality({
-      source: input.source,
-      run: input.run,
-      report: currentReport,
-      now: input.now,
-    });
-  }
-
   if (input.run.state === "no_change" && input.run.artifact_sha256) {
     const artifact = await input.loadArtifact(
       input.dataDir,
@@ -289,11 +300,19 @@ async function summarizeRun(input: {
     if (!input.run.dataset_id) {
       throw new Error(`missing_no_change_dataset:${input.run.run_id}`);
     }
-    const manifest = await loadVerifiedDatasetFromDisk(
+    const manifest = await input.loadDataset(
       input.dataDir,
       input.source.source_id,
       input.run.dataset_id,
     );
+    if (currentReport) {
+      return resultFromQuality({
+        source: input.source,
+        run: input.run,
+        report: currentReport,
+        now: input.now,
+      });
+    }
     if (!manifest.artifact_sha256s.includes(input.run.artifact_sha256)) {
       throw new Error(`dataset_artifact_mismatch:${input.run.run_id}`);
     }
@@ -349,6 +368,15 @@ async function summarizeRun(input: {
     };
   }
 
+  if (currentReport) {
+    return resultFromQuality({
+      source: input.source,
+      run: input.run,
+      report: currentReport,
+      now: input.now,
+    });
+  }
+
   return {
     source_id: input.source.source_id,
     run_id: input.run.run_id,
@@ -387,6 +415,7 @@ export async function runProductionIngestion(
   const runSource = options.runSource ?? runRemoteIngestion;
   const loadArtifact = options.loadArtifact ?? loadArtifactFromDisk;
   const loadQuality = options.loadQuality ?? loadQualityFromDisk;
+  const loadDataset = options.loadDataset ?? loadVerifiedDatasetFromDisk;
   const results: ProductionSourceResult[] = [];
 
   for (const source of sources) {
@@ -404,6 +433,7 @@ export async function runProductionIngestion(
           run,
           loadArtifact,
           loadQuality,
+          loadDataset,
         }),
       );
     } catch {

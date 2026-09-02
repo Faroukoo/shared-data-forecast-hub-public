@@ -84,7 +84,7 @@ type GoogleSheetsXlsxConnector = {
 https://docs.google.com/spreadsheets/d/<spreadsheet_id>/export?format=xlsx&gid=<sheet_gid>
 ```
 
-La politique reseau autorise l'hote initial exact `docs.google.com`, puis uniquement des redirections HTTPS vers un sous-domaine `*.sheets.googleusercontent.com`. Les identifiants dans l'URL sont refuses, le nombre de redirections est limite a trois, le delai reste de quinze secondes et la taille maximale a 4 Mio. Le fichier doit commencer par la signature ZIP attendue d'un XLSX.
+La politique reseau autorise l'hote initial exact `docs.google.com`, puis uniquement des redirections HTTPS dont l'hote respecte `doc-<segments>-sheets.googleusercontent.com`. Les identifiants dans l'URL sont refuses, le nombre de redirections est limite a trois, le delai reste de quinze secondes et la taille maximale a 4 Mio. Le fichier doit commencer par la signature ZIP attendue d'un XLSX.
 
 Ce connecteur ne devient pas un telechargeur URL arbitraire. La politique CKAN existante reste inchangee.
 
@@ -98,7 +98,7 @@ Un nouveau parseur `hcp-official-indicator-workbook` est ajoute avec cinq profil
 - `ippi-2018-official-g2` ;
 - `ippi-2018-official-g3`.
 
-Le parseur CKAN `hcp-index-workbook` reste intact. Le nouveau parseur lit uniquement la premiere feuille, exige les lignes d'entete et colonnes attendues, accepte les cellules numeriques finies et traite `-` comme valeur manquante autorisee uniquement pour `Cokefaction et raffinage`. Il rejette toute autre cellule non numerique dans la zone de donnees.
+Le parseur CKAN `hcp-index-workbook` reste intact. Le nouveau parseur lit uniquement la premiere feuille, exige l'en-tete `Mois`, les lignes et colonnes attendues ainsi que le pied de source HCP obligatoire. Le texte officiel du pied est compare apres retrait des seuls espaces peripheriques de mise en page presents dans certains exports. Les lignes IPC utilisent `AAAA/MM`; les lignes IPPI peuvent contenir une date Excel ou cette chaine stricte, comme dans les exports officiels observes. Le parseur accepte les cellules numeriques finies et traite `-` comme valeur manquante autorisee uniquement pour `Cokefaction et raffinage`. Une cellule vide ou toute autre cellule non numerique dans une ligne publiee est bloquante.
 
 Les etiquettes autorisees et leurs cles sont exactes :
 
@@ -109,13 +109,15 @@ Les etiquettes autorisees et leurs cles sont exactes :
 | IPC g1 | Articles d'habillement et chaussures | `hcp.ipc2017.03` |
 | IPC g1 | Logement, eau, gaz, electricite et autres combustibles | `hcp.ipc2017.04` |
 | IPC g1 | Meubles, articles de menage et entretien courant du foyer | `hcp.ipc2017.05` |
+| IPC g1 | Sante | `hcp.ipc2017.06` |
 | IPC g2 | Transports | `hcp.ipc2017.07` |
 | IPC g2 | Communications | `hcp.ipc2017.08` |
 | IPC g2 | Loisirs et culture | `hcp.ipc2017.09` |
 | IPC g2 | Enseignement | `hcp.ipc2017.10` |
 | IPC g2 | Restaurants et hotels | `hcp.ipc2017.11` |
+| IPC g2 | Biens et services divers | `hcp.ipc2017.12` |
 
-Les accents et apostrophes des etiquettes reelles sont conserves dans `source_series_label`; la table ci-dessus decrit les correspondances semantiques. Les profils IPPI utilisent la meme fonction de slug deja eprouvee par le parseur CKAN pour produire des cles `hcp.ipp2018.<slug>`, mais uniquement apres correspondance avec leur liste fermee de 20 etiquettes auditees. Une etiquette inconnue produit `parser_errors` et met le run en quarantaine.
+Les accents et apostrophes des etiquettes reelles sont conserves dans `source_series_label`; la table ci-dessus decrit les correspondances semantiques. Les profils IPPI utilisent la meme fonction de slug deja eprouvee par le parseur CKAN pour produire des cles `hcp.ipp2018.<slug>`, mais uniquement apres correspondance avec leur liste fermee de 23 etiquettes auditees. Une etiquette inconnue produit `parser_errors` et met le run en quarantaine.
 
 Toutes les observations nouvelles sont nationales : `geography_type = "country"`, `location_key = "ma"`, unite `index`, frequence mensuelle, base 2017 pour IPC et 2018 pour IPPI.
 

@@ -32,6 +32,9 @@ interface HcpOfficialFixtureOptions {
   periods?: readonly (string | Date)[];
   unexpectedString?: boolean;
   emptyValues?: boolean;
+  blankFirstValue?: boolean;
+  omitFooter?: boolean;
+  paddedFooter?: boolean;
 }
 
 const OFFICIAL_IPC_LABELS = {
@@ -41,6 +44,7 @@ const OFFICIAL_IPC_LABELS = {
     "Articles d'habillement et chaussures",
     "Logement, eau, gaz, électricité et autres combustibles",
     "Meubles, articles de ménage et entretien courant du foyer",
+    "Santé",
   ],
   "ipc-2017-official-g2": [
     "Transports",
@@ -48,6 +52,7 @@ const OFFICIAL_IPC_LABELS = {
     "Loisirs et culture",
     "Enseignement",
     "Restaurants et hôtels",
+    "Biens et services divers",
   ],
 } as const;
 
@@ -60,6 +65,7 @@ const OFFICIAL_IPPI_LABELS = {
     "Industrie d'habillement",
     "Industrie de cuir et de la chaussure",
     "Travail du bois et fabrication d'articles en bois",
+    "Industrie du papier et du carton",
   ],
   "ippi-2018-official-g2": [
     "Imprimerie et reproduction d’enregistrement",
@@ -68,6 +74,7 @@ const OFFICIAL_IPPI_LABELS = {
     "Industrie pharmaceutique",
     "Fabrication de produits en caoutchouc et en plastique",
     "Fabrication d'autres produits minéraux non métalliques",
+    "Métallurgie",
   ],
   "ippi-2018-official-g3": [
     "Fabrication de produits métalliques",
@@ -77,6 +84,7 @@ const OFFICIAL_IPPI_LABELS = {
     "Industrie automobile",
     "Fabrication d'autres matériels de transport",
     "fabrication de meubles",
+    "Autres industries manufacturés",
   ],
 } as const;
 
@@ -104,6 +112,7 @@ function setOfficialFixtureRows(
   headerRow: number,
   labels: readonly string[],
   periods: readonly (string | Date)[],
+  footerLabel: string,
   options: HcpOfficialFixtureOptions,
 ): void {
   const fixtureLabels = [...labels];
@@ -119,7 +128,7 @@ function setOfficialFixtureRows(
     ];
   }
 
-  sheet.getCell(headerRow, 2).value = options.dateHeader ?? "Date";
+  sheet.getCell(headerRow, 2).value = options.dateHeader ?? "Mois";
   fixtureLabels.forEach((label, index) => {
     sheet.getCell(headerRow, index + 3).value = label;
   });
@@ -133,7 +142,9 @@ function setOfficialFixtureRows(
       if (options.emptyValues) return;
       const column = labelIndex + 3;
       sheet.getCell(row, column).value =
-        options.unexpectedString && periodIndex === 0 && labelIndex === 0
+        options.blankFirstValue && periodIndex === 0 && labelIndex === 0
+          ? null
+          : options.unexpectedString && periodIndex === 0 && labelIndex === 0
           ? "indisponible"
           : 100 + periodIndex + (labelIndex + 5) / 10;
     });
@@ -141,6 +152,13 @@ function setOfficialFixtureRows(
       sheet.getCell(row, fixtureLabels.length + 3).value = 999;
     }
   });
+  if (!options.omitFooter) {
+    const footerRow = headerRow + periods.length + 1;
+    sheet.mergeCells(footerRow, 2, footerRow, fixtureLabels.length + 2);
+    sheet.getCell(footerRow, 2).value = options.paddedFooter
+      ? ` ${footerLabel}`
+      : footerLabel;
+  }
   if (options.sparseAppendedBusinessRow !== undefined) {
     sheet.getCell(
       options.sparseAppendedBusinessRow,
@@ -167,6 +185,7 @@ export async function createHcpOfficialIpcFixture(
     headerRow,
     OFFICIAL_IPC_LABELS[profile],
     options.periods ?? ["2026/07", "2026/08"],
+    "Source : Enquête des prix à la consommation, Haut Commissariat au Plan",
     options,
   );
   return bytes(workbook);
@@ -185,8 +204,9 @@ export async function createHcpOfficialIppiFixture(
     OFFICIAL_IPPI_LABELS[profile],
     options.periods ?? [
       new Date(Date.UTC(2026, 6, 1)),
-      new Date(Date.UTC(2026, 7, 1)),
+      "2026/06",
     ],
+    "Source : Enquête des prix à la production, Haut Commissariat au Plan",
     options,
   );
   if (profile === "ippi-2018-official-g2" && !options.emptyValues) {

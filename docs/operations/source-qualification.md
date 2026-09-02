@@ -2,7 +2,7 @@
 
 ## Périmètre et décision
 
-Le registre actif contient sept séries mensuelles qualifiées du Haut-Commissariat au Plan (HCP) : deux sources CKAN historiques sur `data.gov.ma` et cinq feuilles officielles HCP récentes. Elles peuvent alimenter les indicateurs macro des projets consommateurs, mais elles ne remplacent pas les prix d'achat réels, les factures fournisseurs ou les stocks de l'ERP Snack.
+Le registre actif contient sept sources mensuelles qualifiées du Haut-Commissariat au Plan (HCP) : deux sources CKAN historiques sur `data.gov.ma` et cinq feuilles officielles HCP récentes. Elles peuvent alimenter les indicateurs macro des projets consommateurs, mais elles ne remplacent pas les prix d'achat réels, les factures fournisseurs ou les stocks de l'ERP Snack.
 
 | Source | Référence qualifiée | Usage | Licence |
 | --- | --- | --- | --- |
@@ -23,7 +23,7 @@ Fichiers qualifiés :
 
 Les pages dataset servent de preuve de licence ODbL 1.0 pour les deux sources CKAN. Ce régime reste distinct de celui des cinq feuilles officielles : leur page d'autorité est [IPC](https://www.hcp.ma/Indices-des-prix-a-la-consommation-IPC_r348.html) ou [IPPI](https://www.hcp.ma/Indices-des-prix-a-la-production-industrielle-IPPI_r624.html), et les [conditions générales HCP](https://www.hcp.ma/Conditions-generales-d-utilisation-Version-1-0_a2194.html) prouvent la réutilisation sous CC BY 4.0, y compris commerciale avec attribution et intégrité. L'usage interne dérivé et la redistribution sont autorisés seulement selon la licence déclarée par chaque entrée du registre. Toute modification de licence bloque la publication jusqu'à une nouvelle qualification humaine ; les régimes ODbL et CC BY 4.0 ne sont jamais fusionnés.
 
-Dernière période vérifiée le 2026-09-01 : juillet 2026 dans les cinq feuilles officielles. Les ressources CKAN ont une dernière modification fournisseur observée le 2025-02-06 : elles restent des séries historiques détaillées, sans être présentées comme une observation fraîche de 2026.
+Dernière période vérifiée le 2026-09-02 : juillet 2026 dans les cinq feuilles officielles. Les ressources CKAN ont une dernière modification fournisseur observée le 2025-02-06 : elles restent des séries historiques détaillées, sans être présentées comme une observation fraîche de 2026.
 
 ## Contrat fournisseur observé
 
@@ -31,9 +31,9 @@ Le classeur IPC contient les feuilles `Data` et `Metadata`. L'en-tête métier e
 
 Le classeur IPP utilise le même contrat de feuilles et de métadonnées. La première colonne est `Secteurs`, les autres colonnes utiles sont mensuelles et la géographie est nationale. Les secteurs sont normalisés en clés stables, tandis que le libellé source original reste conservé.
 
-Les cinq exports officiels sont construits uniquement depuis les IDs et GIDs ci-dessus, sur `docs.google.com`, puis acceptent au plus trois redirections HTTPS vers un sous-domaine `*.sheets.googleusercontent.com`. Chaque profil est fermé : en-tête, colonnes, périodes et libellés source doivent correspondre exactement à la table revue du parseur. Une étiquette amont inconnue, accentuée différemment, déplacée ou renommée est une erreur de parseur et place le run en quarantaine. L'opérateur ne normalise jamais un libellé ; un changement réel exige une modification revue du registre et/ou du parseur avec ses tests.
+Les cinq exports officiels sont construits uniquement depuis les IDs et GIDs ci-dessus, sur `docs.google.com`, puis acceptent au plus trois redirections HTTPS vers un hôte conforme à `doc-<segments>-sheets.googleusercontent.com`. Chaque profil est fermé : en-tête `Mois`, colonnes, périodes, pied de source HCP et libellés source doivent correspondre exactement à la table revue du parseur. Le pied est obligatoire et son libellé officiel est comparé après retrait des seuls espaces périphériques de mise en page observés dans les fichiers HCP. Une étiquette amont inconnue, accentuée différemment, déplacée ou renommée est une erreur de parseur et place le run en quarantaine. L'opérateur ne normalise jamais un libellé métier ; un changement réel exige une modification revue du registre et/ou du parseur avec ses tests.
 
-Les mois admis sont exactement `Janv`, `Févr`, `Mars`, `Avr`, `Mai`, `Juin`, `Juill`, `Août`, `Sept`, `Oct`, `Nov` et `Déc`, suivis de `-AAAA`. Les tirets représentant une absence ne deviennent jamais zéro. Une formule Excel sans résultat scalaire déjà mis en cache est refusée.
+Dans les classeurs CKAN, les colonnes mensuelles restent les douze libellés exacts de `Janv-AAAA` à `Déc-AAAA`. Dans les cinq feuilles officielles, les lignes IPC utilisent strictement `AAAA/MM`; les lignes IPPI acceptent une date Excel ou la même chaîne stricte, car les exports officiels contiennent les deux représentations. Une cellule vide dans une ligne publiée est bloquante. Le tiret qualifié du raffinage représente une absence et ne devient jamais zéro. Une formule Excel sans résultat scalaire déjà mis en cache est refusée.
 
 ## Fiabilité technique
 

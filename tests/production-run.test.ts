@@ -14,6 +14,7 @@ import {
   type QualityReport,
   type SourceDefinition,
 } from "@data-hub/contracts";
+import { canonicalJson } from "@data-hub/canonical";
 import { listEnabledSourceDefinitions } from "@data-hub/source-registry";
 
 import {
@@ -51,11 +52,11 @@ async function writePublishedDatasetFixture(input: {
   root: string;
   source: SourceDefinition;
   artifactSha256: string;
-  datasetId: string;
+  datasetId?: string;
   lastPeriodEnd: string;
   httpLastModified: string | null;
   qualityStatus?: QualityReport["status"];
-}): Promise<void> {
+}): Promise<string> {
   const observation = CanonicalObservationSchema.parse({
     schema_version: SCHEMA_VERSION,
     observation_id: `sha256:${"e".repeat(64)}`,
@@ -86,9 +87,8 @@ async function writePublishedDatasetFixture(input: {
   const canonicalSha256 = createHash("sha256")
     .update(observations)
     .digest("hex");
-  const manifest = DatasetVersionSchema.parse({
+  const stableManifest = {
     schema_version: SCHEMA_VERSION,
-    dataset_id: input.datasetId,
     created_at: FIXED_NOW,
     source_id: input.source.source_id,
     artifact_sha256s: [input.artifactSha256],
@@ -100,8 +100,17 @@ async function writePublishedDatasetFixture(input: {
     location_count: 1,
     warning_count: 0,
     tool_versions: { cli: "0.1.0" },
+  };
+  const { created_at: ignoredCreatedAt, ...identityFields } = stableManifest;
+  void ignoredCreatedAt;
+  const datasetId = input.datasetId ?? `sha256:${createHash("sha256")
+    .update(canonicalJson(identityFields))
+    .digest("hex")}`;
+  const manifest = DatasetVersionSchema.parse({
+    ...stableManifest,
+    dataset_id: datasetId,
   });
-  const publishedDirectory = join(input.root, "published", input.datasetId);
+  const publishedDirectory = join(input.root, "published", datasetId);
   const artifactDirectory = join(input.root, "manifests", "artifacts");
   const qualityDirectory = join(input.root, "quality");
   await Promise.all([
@@ -134,12 +143,47 @@ async function writePublishedDatasetFixture(input: {
       }))}\n`,
     ),
   ]);
+  return datasetId;
+}
+
+function verifiedDatasetFixture(input: {
+  sourceId: string;
+  artifactSha256: string;
+  datasetId: string;
+}) {
+  return DatasetVersionSchema.parse({
+    schema_version: SCHEMA_VERSION,
+    dataset_id: input.datasetId,
+    created_at: FIXED_NOW,
+    source_id: input.sourceId,
+    artifact_sha256s: [input.artifactSha256],
+    canonical_sha256: "f".repeat(64),
+    row_count: 1,
+    first_period_start: "2026-07-01",
+    last_period_end: "2026-07-31",
+    series_count: 1,
+    location_count: 1,
+    warning_count: 0,
+    tool_versions: { cli: "0.1.0" },
+  });
 }
 
 async function productionRunFixture(
   states: IngestionRun["state"][],
 ) {
   const sources = listEnabledSourceDefinitions();
+  const evidence = new Map(
+    sources.map((source, index) => {
+      const artifactSha256 = (index + 1).toString(16).repeat(64);
+      return [
+        source.source_id,
+        {
+          artifactSha256,
+          datasetId: `sha256:${(index + 8).toString(16).repeat(64)}`,
+        },
+      ] as const;
+    }),
+  );
   let sourceIndex = 0;
   return runProductionIngestion({
     dataDir: "/tmp/not-read",
@@ -149,20 +193,39 @@ async function productionRunFixture(
     runSource: ({ sourceId }) => {
       const state = states[sourceIndex] ?? "no_change";
       sourceIndex += 1;
+      const sourceEvidence = evidence.get(sourceId) ?? assert.fail("missing evidence");
       return Promise.resolve(
         ingestionRunFactory({
           source_id: sourceId,
           run_id: `run:${sourceId}`,
           state,
+          artifact_sha256: sourceEvidence.artifactSha256,
+          dataset_id: sourceEvidence.datasetId,
         }),
       );
     },
-    loadArtifact: (_dataDir, sha256) =>
-      Promise.resolve(rawArtifactFactory({ sha256 })),
+    loadArtifact: (_dataDir, sha256) => {
+      const source = sources.find(
+        (candidate) => evidence.get(candidate.source_id)?.artifactSha256 === sha256,
+      ) ?? assert.fail("missing artifact source");
+      return Promise.resolve(rawArtifactFactory({ source_id: source.source_id, sha256 }));
+    },
     loadQuality: (_dataDir, runId) => {
       const sourceId = runId.replace(/^run:/, "");
+      const sourceEvidence = evidence.get(sourceId) ?? assert.fail("missing evidence");
       return Promise.resolve(
-        qualityFor({ sourceId, artifactSha256: "a".repeat(64) }),
+        qualityFor({ sourceId, artifactSha256: sourceEvidence.artifactSha256 }),
+      );
+    },
+    loadDataset: (_dataDir, sourceId, datasetId) => {
+      const sourceEvidence = evidence.get(sourceId) ?? assert.fail("missing evidence");
+      assert.equal(datasetId, sourceEvidence.datasetId);
+      return Promise.resolve(
+        verifiedDatasetFixture({
+          sourceId,
+          artifactSha256: sourceEvidence.artifactSha256,
+          datasetId,
+        }),
       );
     },
   });
@@ -273,8 +336,16 @@ void test("uses current-run quality as authoritative for semantic no-change", as
   const source = listEnabledSourceDefinitions().find(
     (candidate) => candidate.source_id === "hcp-ipc-2017-official-g1-monthly",
   ) ?? assert.fail("missing official source");
+  const datasetArtifactSha256 = "e".repeat(64);
   const artifactSha256 = "f".repeat(64);
   const runId = `run:${source.source_id}:semantic`;
+  const datasetId = await writePublishedDatasetFixture({
+    root,
+    source,
+    artifactSha256: datasetArtifactSha256,
+    lastPeriodEnd: "2026-07-31",
+    httpLastModified: null,
+  });
   await Promise.all([
     mkdir(join(root, "manifests", "artifacts"), { recursive: true }),
     mkdir(join(root, "quality"), { recursive: true }),
@@ -311,7 +382,7 @@ void test("uses current-run quality as authoritative for semantic no-change", as
           run_id: runId,
           state: "no_change",
           artifact_sha256: artifactSha256,
-          dataset_id: `sha256:${"d".repeat(64)}`,
+          dataset_id: datasetId,
         }),
       ),
   });
@@ -321,6 +392,99 @@ void test("uses current-run quality as authoritative for semantic no-change", as
   assert.deepEqual(result.warning_codes, ["source_stale"]);
 });
 
+void test("blocks semantic no-change when dataset evidence is missing", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "data-hub-production-missing-semantic-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = listEnabledSourceDefinitions().find(
+    (candidate) => candidate.source_id === "hcp-ipc-2017-official-g1-monthly",
+  ) ?? assert.fail("missing official source");
+  const artifactSha256 = "4".repeat(64);
+  const runId = `run:${source.source_id}:missing-semantic`;
+  await Promise.all([
+    mkdir(join(root, "manifests", "artifacts"), { recursive: true }),
+    mkdir(join(root, "quality"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(
+      join(root, "manifests", "artifacts", `${artifactSha256}.json`),
+      `${JSON.stringify(rawArtifactFactory({
+        source_id: source.source_id,
+        sha256: artifactSha256,
+        http_last_modified: FIXED_NOW,
+      }))}\n`,
+    ),
+    writeFile(
+      join(root, "quality", `${runId}.json`),
+      `${JSON.stringify(qualityFor({
+        sourceId: source.source_id,
+        artifactSha256,
+      }))}\n`,
+    ),
+  ]);
+
+  const summary = await runProductionIngestion({
+    dataDir: root,
+    codeSha: CODE_SHA,
+    now: FIXED_NOW,
+    sources: [source],
+    runSource: () =>
+      Promise.resolve(
+        ingestionRunFactory({
+          source_id: source.source_id,
+          run_id: runId,
+          state: "no_change",
+          artifact_sha256: artifactSha256,
+          dataset_id: `sha256:${"3".repeat(64)}`,
+        }),
+      ),
+  });
+
+  const result = summary.sources[0] ?? assert.fail("missing source result");
+  assert.equal(result.state, "failed_terminal");
+  assert.equal(result.failure_code, "invalid_source_evidence");
+  assert.equal(summary.decision, "blocked");
+});
+
+void test("blocks no-change when the dataset identity is forged", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "data-hub-production-forged-id-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = listEnabledSourceDefinitions().find(
+    (candidate) => candidate.source_id === "hcp-ipc-2017-official-g1-monthly",
+  ) ?? assert.fail("missing official source");
+  const artifactSha256 = "2".repeat(64);
+  const datasetId = `sha256:${"1".repeat(64)}`;
+  await writePublishedDatasetFixture({
+    root,
+    source,
+    artifactSha256,
+    datasetId,
+    lastPeriodEnd: "2026-07-31",
+    httpLastModified: null,
+  });
+
+  const summary = await runProductionIngestion({
+    dataDir: root,
+    codeSha: CODE_SHA,
+    now: FIXED_NOW,
+    sources: [source],
+    runSource: () =>
+      Promise.resolve(
+        ingestionRunFactory({
+          source_id: source.source_id,
+          run_id: `run:${source.source_id}:forged-id`,
+          state: "no_change",
+          artifact_sha256: artifactSha256,
+          dataset_id: datasetId,
+        }),
+      ),
+  });
+
+  const result = summary.sources[0] ?? assert.fail("missing source result");
+  assert.equal(result.state, "failed_terminal");
+  assert.equal(result.failure_code, "invalid_source_evidence");
+  assert.equal(summary.decision, "blocked");
+});
+
 void test("blocks no-change publication when fallback quality is quarantined", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "data-hub-production-fallback-quarantine-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -328,12 +492,10 @@ void test("blocks no-change publication when fallback quality is quarantined", a
     (candidate) => candidate.source_id === "hcp-ipc-2017-official-g1-monthly",
   ) ?? assert.fail("missing official source");
   const artifactSha256 = "5".repeat(64);
-  const datasetId = `sha256:${"6".repeat(64)}`;
-  await writePublishedDatasetFixture({
+  const datasetId = await writePublishedDatasetFixture({
     root,
     source,
     artifactSha256,
-    datasetId,
     lastPeriodEnd: "2026-07-31",
     httpLastModified: null,
     qualityStatus: "quarantined",
@@ -370,12 +532,10 @@ void test("blocks exact no-change when the run artifact is absent from the datas
   ) ?? assert.fail("missing official source");
   const datasetArtifactSha256 = "7".repeat(64);
   const runArtifactSha256 = "8".repeat(64);
-  const datasetId = `sha256:${"9".repeat(64)}`;
-  await writePublishedDatasetFixture({
+  const datasetId = await writePublishedDatasetFixture({
     root,
     source,
     artifactSha256: datasetArtifactSha256,
-    datasetId,
     lastPeriodEnd: "2026-07-31",
     httpLastModified: null,
   });
@@ -426,7 +586,7 @@ void test("continues later sources after one evidence validation failure", async
         ingestionRunFactory({
           source_id: sourceId,
           run_id: `run:${sourceId}:evidence-continuation`,
-          state: "no_change",
+          state: sourceId === failingSource.source_id ? "no_change" : "published",
           artifact_sha256: "a".repeat(64),
           dataset_id: `sha256:${"b".repeat(64)}`,
         }),
@@ -463,7 +623,7 @@ void test("continues later sources after one evidence validation failure", async
     failure_code: "invalid_source_evidence",
   });
   assert.equal(
-    summary.sources.slice(1).every((result) => result.state === "no_change"),
+    summary.sources.slice(1).every((result) => result.state === "published"),
     true,
   );
 });
@@ -506,12 +666,10 @@ void test("derives official no-change health from the verified July 2026 period"
     (candidate) => candidate.source_id === "hcp-ipc-2017-official-g1-monthly",
   ) ?? assert.fail("missing official source");
   const artifactSha256 = "1".repeat(64);
-  const datasetId = `sha256:${"2".repeat(64)}`;
-  await writePublishedDatasetFixture({
+  const datasetId = await writePublishedDatasetFixture({
     root,
     source,
     artifactSha256,
-    datasetId,
     lastPeriodEnd: "2026-07-31",
     httpLastModified: "2026-11-29T00:00:00.000Z",
   });
@@ -551,12 +709,10 @@ void test("blocks exact no-change when the verified period is in the future", as
     (candidate) => candidate.source_id === "hcp-ipc-2017-official-g1-monthly",
   ) ?? assert.fail("missing official source");
   const artifactSha256 = "0".repeat(64);
-  const datasetId = `sha256:${"1".repeat(64)}`;
-  await writePublishedDatasetFixture({
+  const datasetId = await writePublishedDatasetFixture({
     root,
     source,
     artifactSha256,
-    datasetId,
     lastPeriodEnd: "2026-09-30",
     httpLastModified: null,
   });
@@ -590,12 +746,10 @@ void test("reports stale health for an unchanged old CKAN artifact", async (t) =
   const source =
     listEnabledSourceDefinitions()[0] ?? assert.fail("missing enabled source");
   const artifactSha256 = "3".repeat(64);
-  const datasetId = `sha256:${"4".repeat(64)}`;
-  await writePublishedDatasetFixture({
+  const datasetId = await writePublishedDatasetFixture({
     root,
     source,
     artifactSha256,
-    datasetId,
     lastPeriodEnd: "2026-07-31",
     httpLastModified: "2026-04-01T00:00:00.000Z",
   });

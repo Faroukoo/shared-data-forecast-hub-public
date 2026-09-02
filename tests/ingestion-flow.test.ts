@@ -19,6 +19,7 @@ import {
   HCP_IPC_2017_OFFICIAL_G1_SOURCE,
   HCP_IPC_2017_SOURCE,
 } from "@data-hub/source-registry";
+import { validateDataHubState } from "@data-hub/snapshot";
 
 import { runManualIngestion, runRemoteIngestion } from "../apps/ingest-cli/src/run-ingestion.js";
 import { createSafeLogger } from "../apps/ingest-cli/src/safe-log.js";
@@ -198,6 +199,8 @@ void test("deduplicates repackaged Google XLSX values and revises semantic chang
     ),
     true,
   );
+  const validatedState = await validateDataHubState(root);
+  assert.equal(validatedState.dataset_ids.includes(changed.dataset_id ?? "missing"), true);
   assert.deepEqual(requestedUrls, [
     OFFICIAL_EXPORT_URL,
     OFFICIAL_EXPORT_URL,

@@ -28,6 +28,7 @@ const IPC_G1_LABELS = Object.freeze({
   "Articles d'habillement et chaussures": "hcp.ipc2017.03",
   "Logement, eau, gaz, électricité et autres combustibles": "hcp.ipc2017.04",
   "Meubles, articles de ménage et entretien courant du foyer": "hcp.ipc2017.05",
+  Santé: "hcp.ipc2017.06",
 });
 
 const IPC_G2_LABELS = Object.freeze({
@@ -36,6 +37,7 @@ const IPC_G2_LABELS = Object.freeze({
   "Loisirs et culture": "hcp.ipc2017.09",
   Enseignement: "hcp.ipc2017.10",
   "Restaurants et hôtels": "hcp.ipc2017.11",
+  "Biens et services divers": "hcp.ipc2017.12",
 });
 
 const IPPI_G1_LABELS = Object.freeze([
@@ -46,6 +48,7 @@ const IPPI_G1_LABELS = Object.freeze([
   "Industrie d'habillement",
   "Industrie de cuir et de la chaussure",
   "Travail du bois et fabrication d'articles en bois",
+  "Industrie du papier et du carton",
 ]);
 
 const IPPI_G2_LABELS = Object.freeze([
@@ -55,6 +58,7 @@ const IPPI_G2_LABELS = Object.freeze([
   "Industrie pharmaceutique",
   "Fabrication de produits en caoutchouc et en plastique",
   "Fabrication d'autres produits minéraux non métalliques",
+  "Métallurgie",
 ]);
 
 const IPPI_G3_LABELS = Object.freeze([
@@ -65,7 +69,13 @@ const IPPI_G3_LABELS = Object.freeze([
   "Industrie automobile",
   "Fabrication d'autres matériels de transport",
   "fabrication de meubles",
+  "Autres industries manufacturés",
 ]);
+
+const IPC_FOOTER =
+  "Source : Enquête des prix à la consommation, Haut Commissariat au Plan";
+const IPPI_FOOTER =
+  "Source : Enquête des prix à la production, Haut Commissariat au Plan";
 
 function ippiLabelMap(labels: readonly string[]): Readonly<Record<string, string>> {
   return Object.freeze(
@@ -80,9 +90,10 @@ const PROFILES = Object.freeze({
     firstDataRow: 25,
     dateColumn: 2,
     firstValueColumn: 3,
-    lastValueColumn: 7,
+    lastValueColumn: 8,
     baseYear: 2017,
     dateKind: "string" as const,
+    footerLabel: IPC_FOOTER,
     labelToKey: IPC_G1_LABELS,
   }),
   "ipc-2017-official-g2": Object.freeze({
@@ -91,9 +102,10 @@ const PROFILES = Object.freeze({
     firstDataRow: 25,
     dateColumn: 2,
     firstValueColumn: 3,
-    lastValueColumn: 7,
+    lastValueColumn: 8,
     baseYear: 2017,
     dateKind: "string" as const,
+    footerLabel: IPC_FOOTER,
     labelToKey: IPC_G2_LABELS,
   }),
   "ippi-2018-official-g1": Object.freeze({
@@ -102,9 +114,10 @@ const PROFILES = Object.freeze({
     firstDataRow: 23,
     dateColumn: 2,
     firstValueColumn: 3,
-    lastValueColumn: 9,
+    lastValueColumn: 10,
     baseYear: 2018,
-    dateKind: "date" as const,
+    dateKind: "date-or-string" as const,
+    footerLabel: IPPI_FOOTER,
     labelToKey: ippiLabelMap(IPPI_G1_LABELS),
   }),
   "ippi-2018-official-g2": Object.freeze({
@@ -113,9 +126,10 @@ const PROFILES = Object.freeze({
     firstDataRow: 23,
     dateColumn: 2,
     firstValueColumn: 3,
-    lastValueColumn: 8,
+    lastValueColumn: 9,
     baseYear: 2018,
-    dateKind: "date" as const,
+    dateKind: "date-or-string" as const,
+    footerLabel: IPPI_FOOTER,
     labelToKey: ippiLabelMap(IPPI_G2_LABELS),
   }),
   "ippi-2018-official-g3": Object.freeze({
@@ -124,9 +138,10 @@ const PROFILES = Object.freeze({
     firstDataRow: 23,
     dateColumn: 2,
     firstValueColumn: 3,
-    lastValueColumn: 9,
+    lastValueColumn: 10,
     baseYear: 2018,
-    dateKind: "date" as const,
+    dateKind: "date-or-string" as const,
+    footerLabel: IPPI_FOOTER,
     labelToKey: ippiLabelMap(IPPI_G3_LABELS),
   }),
 });
@@ -216,7 +231,7 @@ function scalarFromCell(
   value: ExcelJS.CellValue,
   allowDash: boolean,
 ): { kind: "value"; value: string } | { kind: "missing" } | { kind: "error" } {
-  if (value === null || value === undefined || value === "") return { kind: "missing" };
+  if (value === null || value === undefined || value === "") return { kind: "error" };
   if (value === "-") return allowDash ? { kind: "missing" } : { kind: "error" };
   if (typeof value !== "number" && typeof value !== "string") return { kind: "error" };
   try {
@@ -273,7 +288,7 @@ function fixedLayoutErrors(
   profile: Profile,
 ): string[] {
   const errors: string[] = [];
-  if (plainText(sheet.getCell(profile.headerRow, profile.dateColumn).value) !== "Date") {
+  if (plainText(sheet.getCell(profile.headerRow, profile.dateColumn).value) !== "Mois") {
     errors.push("invalid_header:date");
   }
   const appendedCellErrors: string[] = [];
@@ -352,20 +367,42 @@ export async function parseHcpOfficialIndicatorWorkbook(
     retrieved.getUTCFullYear() * 12 + retrieved.getUTCMonth();
   const observations: ObservationCandidate[] = [];
   const observedPeriods = new Set<string>();
+  const footerState = { seen: false };
 
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber < profile.firstDataRow) return;
     const dateValue = row.getCell(profile.dateColumn).value;
+    const footerCandidate = plainText(dateValue);
+    if (footerCandidate?.trim() === profile.footerLabel) {
+      if (footerState.seen) {
+        parserErrors.push(`duplicate_footer:${String(rowNumber)}`);
+        return;
+      }
+      const invalidFooterCell = labels.some(
+        ({ column }) =>
+          plainText(row.getCell(column).value)?.trim() !== profile.footerLabel,
+      );
+      if (invalidFooterCell) {
+        parserErrors.push(`invalid_footer:${String(rowNumber)}`);
+        return;
+      }
+      footerState.seen = true;
+      return;
+    }
     const hasValue = labels.some(({ column }) => {
       const value = row.getCell(column).value;
       return value !== null && value !== undefined && value !== "";
     });
+    if (footerState.seen && (hasCellContent(dateValue) || hasValue)) {
+      parserErrors.push(`unexpected_content_after_footer:${String(rowNumber)}`);
+      return;
+    }
     if ((dateValue === null || dateValue === undefined || dateValue === "") && !hasValue) {
       return;
     }
     const period = profile.dateKind === "string"
       ? periodFromString(dateValue)
-      : periodFromDate(dateValue);
+      : periodFromDate(dateValue) ?? periodFromString(dateValue);
     if (!period) {
       parserErrors.push(`invalid_period:${String(rowNumber)}`);
       return;
@@ -422,6 +459,7 @@ export async function parseHcpOfficialIndicatorWorkbook(
     }
   });
 
+  if (!footerState.seen) parserErrors.push("missing_footer");
   if (observations.length === 0) parserErrors.push("empty_observations");
   return ParsedDatasetSchema.parse({
     schema_version: SCHEMA_VERSION,

@@ -6,12 +6,11 @@ import {
   type SafeFetchHostPolicy,
 } from "./safe-http.js";
 
-const GOOGLE_SHEETS_REDIRECT_SUFFIX = ".sheets.googleusercontent.com";
+const GOOGLE_SHEETS_REDIRECT_HOST =
+  /^doc-[a-z0-9]+(?:-[a-z0-9]+)*-sheets\.googleusercontent\.com$/;
 const GOOGLE_SHEETS_HOST_POLICY: SafeFetchHostPolicy = {
   allowInitial: (url) => url.hostname === "docs.google.com",
-  allowRedirect: (url) =>
-    url.hostname.endsWith(GOOGLE_SHEETS_REDIRECT_SUFFIX) &&
-    url.hostname.length > GOOGLE_SHEETS_REDIRECT_SUFFIX.length,
+  allowRedirect: (url) => GOOGLE_SHEETS_REDIRECT_HOST.test(url.hostname),
 };
 
 export interface DownloadedGoogleSheet {

@@ -122,7 +122,15 @@ export function resolveRevisions(
   for (const candidate of candidates.values()) {
     const current = previous.get(candidate.natural_key);
     if (current && semanticEvidence(current) === semanticEvidence(candidate)) {
-      result.push(current);
+      result.push(
+        createObservation(
+          candidate,
+          current.revision_number,
+          current.supersedes_observation_id,
+          input.qualityStatus ?? "accepted",
+          input.warningCodes ?? [],
+        ),
+      );
       continue;
     }
     result.push(

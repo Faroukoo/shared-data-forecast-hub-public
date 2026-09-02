@@ -163,7 +163,7 @@ export function downloadGoogleSheetsXlsx(
 
 - [ ] **Step 1: Write failing connector tests**
 
-Cover exact export URL/query order, a 307 redirect to `doc-xx.sheets.googleusercontent.com`, rejection of `googleusercontent.com` without the `sheets` suffix, sibling/subdomain tricks, credentials, HTTP, fourth redirect, over-limit `content-length`, streamed over-limit body, non-ZIP bytes and use with a CKAN source.
+Cover exact export URL/query order, a 307 redirect to `doc-xx-a8-sheets.googleusercontent.com`, rejection of `googleusercontent.com` without the exact Google Sheets export host shape, sibling/subdomain tricks, credentials, HTTP, fourth redirect, over-limit `content-length`, streamed over-limit body, non-ZIP bytes and use with a CKAN source.
 
 - [ ] **Step 2: Run connector tests and verify failure**
 
@@ -184,7 +184,7 @@ export interface SafeFetchHostPolicy {
 }
 ```
 
-The CKAN caller supplies exact `data.gov.ma`/`www.data.gov.ma`; its tests must remain unchanged. The Google caller allows initial hostname exactly `docs.google.com` and redirects only when `hostname.endsWith(".sheets.googleusercontent.com")` and the prefix is non-empty.
+The CKAN caller supplies exact `data.gov.ma`/`www.data.gov.ma`; its tests must remain unchanged. The Google caller allows initial hostname exactly `docs.google.com` and redirects only to the observed strict shape `doc-<segments>-sheets.googleusercontent.com`.
 
 - [ ] **Step 4: Implement the Google connector**
 
@@ -227,7 +227,7 @@ export function parseHcpOfficialIndicatorWorkbook(
 
 - [ ] **Step 1: Generate exact in-memory fixture workbooks**
 
-Add fixture builders for IPC rows 24/25 and IPPI rows 22/23. Include two months, exact labels from every group, Excel `Date` cells for IPPI, `YYYY/MM` strings for IPC and `-` only in the refining column.
+Add fixture builders for IPC rows 24/25 and IPPI rows 22/23. Include the exact `Mois` header, the official HCP footer, two months, every label from each group, mixed Excel `Date` and strict `YYYY/MM` cells for IPPI, strict `YYYY/MM` strings for IPC and `-` only in the refining column.
 
 - [ ] **Step 2: Write failing parser tests**
 

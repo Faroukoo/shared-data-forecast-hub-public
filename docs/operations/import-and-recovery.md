@@ -70,7 +70,7 @@ Une quarantaine n'autorise ni suppression de preuve, ni publication forcée, ni 
 
 Interroger au maximum tous les 7 jours pour ces séries mensuelles. Pour les deux sources CKAN, la fraîcheur est évaluée depuis `remote_last_modified` et les métadonnées distantes : après 60 jours, traiter `source_late` comme une alerte opérateur ; après 120 jours, `source_stale` doit rester visible dans les dashboards consommateurs. Pour les cinq Google Sheets HCP, elle est évaluée exclusivement depuis la dernière `period_end` publiée et analysée, avec les mêmes seuils de 60 et 120 jours ; ne jamais substituer un `Last-Modified`, un `ETag` ou l'horodatage de l'export XLSX.
 
-Si le portail est indisponible, ne pas multiplier les tentatives ni utiliser automatiquement un miroir non officiel. Après vérification humaine, un fichier officiel reçu par un canal fiable peut être importé manuellement une fois ; le lancement distant hebdomadaire reprend ensuite. Chaque nouveau fichier manuel doit être contrôlé séparément et conserver son SHA-256. Pour une feuille officielle, une redirection refusée reste une alerte de transport : conserver le run, vérifier que l'URL part de `docs.google.com` et qu'elle ne redirige que vers `*.sheets.googleusercontent.com`, puis faire revoir le connecteur si le fournisseur a réellement changé de domaine.
+Si le portail est indisponible, ne pas multiplier les tentatives ni utiliser automatiquement un miroir non officiel. Après vérification humaine, un fichier officiel reçu par un canal fiable peut être importé manuellement une fois ; le lancement distant hebdomadaire reprend ensuite. Chaque nouveau fichier manuel doit être contrôlé séparément et conserver son SHA-256. Pour une feuille officielle, une redirection refusée reste une alerte de transport : conserver le run, vérifier que l'URL part de `docs.google.com` et qu'elle ne redirige que vers un hôte conforme à `doc-<segments>-sheets.googleusercontent.com`, puis faire revoir le connecteur si le fournisseur a réellement changé de domaine.
 
 ## Réactions opérateur aux preuves HCP
 
@@ -82,7 +82,7 @@ Si le portail est indisponible, ne pas multiplier les tentatives ni utiliser aut
 | `source_late` ou `source_stale` CKAN | Conserver les valeurs officielles sans les réécrire. Vérifier les métadonnées distantes et `remote_last_modified` ; alerte après 60 jours et état périmé après 120 jours. |
 | `source_late` ou `source_stale` Google Sheets | Conserver la dernière période et les valeurs officielles sans les réécrire. Vérifier la publication HCP ; la fraîcheur vient exclusivement de `period_end`, avec alerte après 60 jours et état périmé après 120 jours. |
 
-Au 2026-09-01, la dernière période vérifiée dans chaque feuille officielle est juillet 2026. Les deux CKAN restent des preuves historiques avec dernière modification fournisseur observée le 2025-02-06.
+Au 2026-09-02, la dernière période vérifiée dans chaque feuille officielle est juillet 2026. Les deux CKAN restent des preuves historiques avec dernière modification fournisseur observée le 2025-02-06.
 
 ## Sauvegarde, vérification et restauration
 
