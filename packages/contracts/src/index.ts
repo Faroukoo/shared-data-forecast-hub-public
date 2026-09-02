@@ -58,3 +58,15 @@ export {
   type ConsumerPayload,
   type ConsumerSource,
 } from "./consumer.js";
+export {
+  CONSUMER_V2_CONTRACT,
+  CONSUMER_V2_PROFILE,
+  ConsumerV2IndexSchema,
+  ConsumerV2ObservationSchema,
+  ConsumerV2PayloadSchema,
+  ConsumerV2SourceSchema,
+  type ConsumerV2Index,
+  type ConsumerV2Observation,
+  type ConsumerV2Payload,
+  type ConsumerV2Source,
+} from "./consumer-v2.js";
