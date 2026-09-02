@@ -129,6 +129,104 @@ function boundedShellIf(
   assert.fail(`unterminated shell block: ${opening}`);
 }
 
+type GhApiCommand = {
+  start: number;
+  method: string;
+  text: string;
+};
+
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+
+  for (const character of command) {
+    if (escaped) {
+      word += character;
+      escaped = false;
+    } else if (character === "\\" && quote !== "'") {
+      escaped = true;
+    } else if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+      else word += character;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+    } else if (/\s/.test(character)) {
+      if (word !== "") {
+        words.push(word);
+        word = "";
+      }
+    } else {
+      word += character;
+    }
+  }
+
+  assert.equal(quote, undefined, `unterminated quote: ${command}`);
+  assert.equal(escaped, false, `unterminated escape: ${command}`);
+  if (word !== "") words.push(word);
+  return words;
+}
+
+function ghApiMethod(words: readonly string[], command: string): string {
+  const explicitMethods: string[] = [];
+  let hasField = false;
+
+  for (let index = 2; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (word === "--method" || word === "-X") {
+      const value = words[index + 1];
+      assert.notEqual(value, undefined, `missing method value: ${command}`);
+      explicitMethods.push(value as string);
+      index += 1;
+    } else if (word.startsWith("--method=")) {
+      explicitMethods.push(word.slice("--method=".length));
+    } else if (word.startsWith("-X=")) {
+      explicitMethods.push(word.slice("-X=".length));
+    } else if (word.startsWith("-X") && word.length > 2) {
+      explicitMethods.push(word.slice(2));
+    } else if (
+      word === "-F" ||
+      word === "-f" ||
+      word === "--field" ||
+      word === "--raw-field" ||
+      /^-[Ff].+/.test(word) ||
+      word.startsWith("--field=") ||
+      word.startsWith("--raw-field=")
+    ) {
+      hasField = true;
+    }
+  }
+
+  assert.ok(explicitMethods.length <= 1, `multiple methods: ${command}`);
+  return (explicitMethods[0] ?? (hasField ? "POST" : "GET")).toUpperCase();
+}
+
+function logicalGhApiCommands(run: string): GhApiCommand[] {
+  const lines = run.split("\n");
+  const commands: GhApiCommand[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const start = index;
+    const parts: string[] = [];
+    let line = lines[index]?.trim() ?? "";
+    while (line.endsWith("\\")) {
+      parts.push(line.slice(0, -1).trimEnd());
+      index += 1;
+      assert.ok(index < lines.length, "unterminated logical shell command");
+      line = lines[index]?.trim() ?? "";
+    }
+    parts.push(line);
+    const text = parts.join(" ");
+    if (!/^gh\s+api(?:\s|$)/.test(text)) continue;
+    const words = shellWords(text);
+    assert.deepEqual(words.slice(0, 2), ["gh", "api"]);
+    commands.push({ start, method: ghApiMethod(words, text), text });
+  }
+
+  return commands;
+}
+
 function assertHardenedConsumerReleasePolicy(
   workflow: Record<string, unknown>,
 ): void {
@@ -159,23 +257,30 @@ function assertHardenedConsumerReleasePolicy(
 
   const verifyRun = stepRun(verifyStep, "verify.run");
   const publishRun = stepRun(publishStep, "publish.run");
+  const verifyLines = verifyRun.split("\n");
+  const verifyCaseStart = verifyLines.indexOf('case "$contract_version" in');
+  assert.notEqual(verifyCaseStart, -1, "verify.case");
+  assert.equal(
+    verifyLines[verifyCaseStart - 1],
+    'contract_version="$CONTRACT_VERSION"',
+    "verify contract binding before case",
+  );
   assertClosedContractCase(verifyRun, "verify");
   assertClosedContractCase(publishRun, "publish");
 
   const publishLines = publishRun.split("\n");
-  const patchMentions = publishLines
-    .map((line, index) => ({ line: line.trim(), index }))
-    .filter(({ line }) => line.includes("--method PATCH"));
-  assert.equal(patchMentions.length, 1, "one PATCH command");
-  const patchIndex = patchMentions[0]?.index ?? -1;
-  assert.deepEqual(
-    publishLines.slice(patchIndex, patchIndex + 2).map((line) => line.trim()),
-    [
-      'gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" \\',
-      '-F prerelease=false > "$work_root/after-promotion.json"',
-    ],
-    "PATCH changes prerelease only",
+  const apiWrites = logicalGhApiCommands(publishRun).filter(
+    (command) => command.method !== "GET",
   );
+  assert.equal(apiWrites.length, 1, "one gh api write command");
+  const patchCommand = apiWrites[0] as GhApiCommand;
+  assert.equal(patchCommand.method, "PATCH", "the only gh api write is PATCH");
+  assert.equal(
+    patchCommand.text,
+    'gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F prerelease=false > "$work_root/after-promotion.json"',
+    "PATCH release surface and body",
+  );
+  const patchIndex = patchCommand.start;
 
   const existingReleaseBlock = boundedShellIf(
     publishLines,
@@ -552,6 +657,14 @@ void test("consumer release policy rejects mutations of every guarded write inva
       apply: (value) => mutateFirst(value, "          REQUESTED_CONTRACT_VERSION: ${{ inputs.contract_version }}\n", ""),
     },
     {
+      name: "verify no longer assigns the contract input before its case",
+      apply: (value) => mutateFirst(value, '          contract_version="$CONTRACT_VERSION"\n', ""),
+    },
+    {
+      name: "verify replaces the contract input with v1 before its case",
+      apply: (value) => mutateFirst(value, '          contract_version="$CONTRACT_VERSION"', '          contract_version="v1"'),
+    },
+    {
       name: "v1 payload assignment changes",
       apply: (value) => mutateFirst(value, '              payload_name="consumer-v1.json"', '              payload_name="consumer-v2.json"'),
     },
@@ -609,6 +722,30 @@ void test("consumer release policy rejects mutations of every guarded write inva
     {
       name: "a second PATCH command is added",
       apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "a second PATCH command uses equals long syntax",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api --method=PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "a second PATCH command uses short syntax",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api -X PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "a second PATCH command uses equals short syntax",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api -X=PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "a second PATCH command uses compact short syntax",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api -XPATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "an unknown DELETE release write is added",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api --method DELETE "/repos/$GITHUB_REPOSITORY/releases/$candidate_id"'),
+    },
+    {
+      name: "an implicit POST release write is added",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
     },
     {
       name: "the PATCH mutates a second field",
