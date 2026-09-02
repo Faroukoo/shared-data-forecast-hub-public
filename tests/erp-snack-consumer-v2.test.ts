@@ -481,6 +481,81 @@ void test("rejects disabled, non-official and non-redistributable source definit
   }
 });
 
+const REGISTERED_SOURCE_MUTATIONS: Array<{
+  field: string;
+  mutate: (source: SourceDefinition) => void;
+}> = [
+  {
+    field: "publisher_name",
+    mutate: (source) => { source.publisher_name = "Éditeur non qualifié"; },
+  },
+  {
+    field: "official_base_url",
+    mutate: (source) => {
+      source.official_base_url = "https://example.invalid/official";
+    },
+  },
+  {
+    field: "cadence",
+    mutate: (source) => { source.cadence.warning_age_days = 61; },
+  },
+  {
+    field: "connector",
+    mutate: (source) => {
+      if (source.connector.kind !== "google-sheets-xlsx") {
+        assert.fail("expected official Google Sheets connector");
+      }
+      source.connector.sheet_gid = "1240277578";
+    },
+  },
+  {
+    field: "parser",
+    mutate: (source) => {
+      if (source.parser.kind !== "hcp-official-indicator-workbook") {
+        assert.fail("expected official indicator parser");
+      }
+      source.parser.profile = "ipc-2017-official-g2";
+    },
+  },
+  {
+    field: "geography_scope",
+    mutate: (source) => { source.geography_scope = ["country", "city"]; },
+  },
+  {
+    field: "series_scope",
+    mutate: (source) => {
+      source.series_scope = ["producer_price_index"];
+    },
+  },
+  {
+    field: "owner",
+    mutate: (source) => { source.owner = "unqualified-owner"; },
+  },
+  {
+    field: "recovery_procedure",
+    mutate: (source) => {
+      source.recovery_procedure = "docs/unqualified-recovery.md";
+    },
+  },
+];
+
+for (const invalidCase of REGISTERED_SOURCE_MUTATIONS) {
+  void test(`rejects registered source ${invalidCase.field} mutation`, () => {
+    const candidateSources = structuredClone(sources());
+    const official = candidateSources[1] ?? assert.fail("missing official source");
+    invalidCase.mutate(official);
+    assert.throws(
+      () => projectErpSnackV2Observations({
+        observationsBySource: completeObservationsBySource(),
+        snapshot: snapshot(),
+        sources: candidateSources,
+      }),
+      /consumer_v2_source_not_qualified:hcp-ipc-2017-official-g1-monthly/,
+      invalidCase.field,
+    );
+  });
+}
+
 void test("rejects unexpected licence identity and evidence", () => {
   for (const mutate of [
     (source: SourceDefinition) => { source.licence.id = "INVALID"; },

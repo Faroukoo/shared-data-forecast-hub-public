@@ -162,7 +162,10 @@ function exactSources(
     ) {
       throw new Error(`consumer_v2_licence_mismatch:${source.source_id}`);
     }
-    byId.set(source.source_id, source);
+    if (canonicalJson(source) !== canonicalJson(registeredSource)) {
+      throw new Error(`consumer_v2_source_not_qualified:${source.source_id}`);
+    }
+    byId.set(source.source_id, registeredSource);
   }
   for (const sourceId of REQUIRED_SOURCE_IDS) {
     if (!byId.has(sourceId)) {
