@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { canonicalJson } from "@data-hub/canonical";
 import {
   CONSUMER_V2_CONTRACT,
   CONSUMER_V2_PROFILE,
@@ -31,6 +32,15 @@ const REQUIRED_SOURCE_IDS = [
   "hcp-ipc-2017-monthly",
   "hcp-ipc-2017-official-g1-monthly",
 ] as const;
+const REGISTERED_SOURCE_BY_ID = new Map([
+  [HCP_IPC_2017_SOURCE.source_id, HCP_IPC_2017_SOURCE],
+  [
+    HCP_IPC_2017_OFFICIAL_G1_SOURCE.source_id,
+    HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+  ],
+]);
+const ADMISSIBLE_SNAPSHOT_STATES = new Set(["published", "no_change"]);
+const ADMISSIBLE_SOURCE_HEALTH = new Set(["healthy", "late", "stale"]);
 
 type RequiredSourceId = (typeof REQUIRED_SOURCE_IDS)[number];
 type AdmittedCanonicalObservation = CanonicalObservation & {
@@ -129,6 +139,29 @@ function exactSources(
     if (byId.has(source.source_id)) {
       throw new Error(`consumer_v2_source_duplicate:${source.source_id}`);
     }
+    if (
+      source.authority_level !== "official" ||
+      !source.enabled ||
+      source.access_mode === "disabled"
+    ) {
+      throw new Error(`consumer_v2_source_not_qualified:${source.source_id}`);
+    }
+    if (!source.licence.permits_redistribution) {
+      throw new Error(
+        `consumer_v2_redistribution_not_permitted:${source.source_id}`,
+      );
+    }
+    const registeredSource = REGISTERED_SOURCE_BY_ID.get(source.source_id);
+    if (
+      !registeredSource ||
+      source.licence.id !== registeredSource.licence.id ||
+      source.licence.evidence_url !==
+        registeredSource.licence.evidence_url ||
+      source.licence.permits_internal_derived_use !==
+        registeredSource.licence.permits_internal_derived_use
+    ) {
+      throw new Error(`consumer_v2_licence_mismatch:${source.source_id}`);
+    }
     byId.set(source.source_id, source);
   }
   for (const sourceId of REQUIRED_SOURCE_IDS) {
@@ -175,7 +208,45 @@ function snapshotSourceFor(
   ) {
     throw new Error(`consumer_v2_snapshot_dataset_missing:${sourceId}`);
   }
+  if (!ADMISSIBLE_SNAPSHOT_STATES.has(source.state)) {
+    throw new Error(
+      `consumer_v2_snapshot_source_state_invalid:${sourceId}:${source.state}`,
+    );
+  }
+  if (
+    source.health_status === null ||
+    !ADMISSIBLE_SOURCE_HEALTH.has(source.health_status)
+  ) {
+    throw new Error(
+      `consumer_v2_snapshot_source_health_invalid:${sourceId}:${source.health_status ?? "missing"}`,
+    );
+  }
+  if (source.artifact_sha256 === null || source.failure_code !== null) {
+    throw new Error(`consumer_v2_snapshot_source_evidence_invalid:${sourceId}`);
+  }
   return { ...source, dataset_id: source.dataset_id };
+}
+
+function currentRevisionByPeriod(
+  rows: readonly AdmittedCanonicalObservation[],
+): AdmittedCanonicalObservation[] {
+  const currentByPeriod = new Map<string, AdmittedCanonicalObservation>();
+  for (const row of rows) {
+    const current = currentByPeriod.get(row.period_start);
+    if (
+      !current ||
+      row.revision_number > current.revision_number ||
+      (row.revision_number === current.revision_number &&
+        compareCodeUnits(canonicalJson(row), canonicalJson(current)) > 0)
+    ) {
+      currentByPeriod.set(row.period_start, row);
+    }
+  }
+  return [...currentByPeriod.values()].sort(
+    (left, right) =>
+      compareCodeUnits(left.period_start, right.period_start) ||
+      left.revision_number - right.revision_number,
+  );
 }
 
 function projectWithSourceTag(input: {
@@ -226,15 +297,22 @@ function projectWithSourceTag(input: {
         `consumer_v2_profile_tuple_missing:${tuple.category}|${tuple.locationKey}`,
       );
     }
-    rows.sort(
-      (left, right) =>
-        compareCodeUnits(left.period_start, right.period_start) ||
-        left.revision_number - right.revision_number,
-    );
-    for (const row of rows.slice(-24)) {
+    const currentRows = currentRevisionByPeriod(rows);
+    if (currentRows.length < 24) {
+      throw new Error(
+        `consumer_v2_profile_history_incomplete:${tuple.category}|${tuple.locationKey}:${String(currentRows.length)}`,
+      );
+    }
+    for (const row of currentRows.slice(-24)) {
       selected.push({ row, tuple });
       selectedBySource.get(tuple.sourceId)?.push(row);
     }
+  }
+
+  if (selected.length !== 360) {
+    throw new Error(
+      `consumer_v2_observation_count_invalid:${String(selected.length)}`,
+    );
   }
 
   const observations = selected
@@ -266,6 +344,11 @@ function projectWithSourceTag(input: {
       };
     })
     .sort(observationOrder);
+  if (observations.length !== 360) {
+    throw new Error(
+      `consumer_v2_observation_count_invalid:${String(observations.length)}`,
+    );
+  }
 
   const coverageStart = observations.reduce(
     (minimum, row) =>

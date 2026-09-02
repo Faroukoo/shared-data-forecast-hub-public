@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
+import ExcelJS from "exceljs";
+
 import { canonicalJson } from "@data-hub/canonical";
 import {
   ERP_SNACK_V2_TUPLES,
@@ -28,6 +30,12 @@ import {
   HCP_IPC_2017_OFFICIAL_G1_SOURCE,
   HCP_IPC_2017_SOURCE,
 } from "@data-hub/source-registry";
+
+import { runRemoteIngestion } from "../apps/ingest-cli/src/run-ingestion.js";
+import {
+  createCkanFetchFixture,
+  createHcpOfficialIpcFixture,
+} from "./fixture-workbooks.js";
 
 const SNAPSHOT_CREATED_AT = "2026-09-01T12:00:00.000Z";
 const SNAPSHOT_ID =
@@ -82,19 +90,22 @@ function observation(input: {
   monthOffset: number;
   sourceId: RequiredSourceId;
   qualityStatus?: "accepted" | "accepted_with_warning" | "quarantined";
+  revisionNumber?: number;
+  value?: string;
 }): CanonicalObservation {
   const period = monthPeriod(input.sourceId, input.monthOffset);
   const qualityStatus = input.qualityStatus ?? "accepted";
+  const revisionNumber = input.revisionNumber ?? 1;
   return CanonicalObservationSchema.parse({
     schema_version: SCHEMA_VERSION,
-    observation_id: `sha256:${input.sourceId}|${input.seriesKey}|${input.locationKey}|${period.start}`,
+    observation_id: `sha256:${input.sourceId}|${input.seriesKey}|${input.locationKey}|${period.start}|${String(revisionNumber)}`,
     natural_key: `${input.seriesKey}|${input.locationKey}|${period.start.slice(0, 7)}`,
     series_key: input.seriesKey,
     source_series_label: `Libellé ${input.seriesKey}`,
     period_start: period.start,
     period_end: period.end,
     frequency: "monthly",
-    value: String(100 + input.monthOffset),
+    value: input.value ?? String(100 + input.monthOffset),
     unit: "index",
     currency: null,
     scaling_factor: "1",
@@ -110,8 +121,11 @@ function observation(input: {
     quality_status: qualityStatus,
     warning_codes:
       qualityStatus === "accepted_with_warning" ? ["source_stale"] : [],
-    revision_number: 1,
-    supersedes_observation_id: null,
+    revision_number: revisionNumber,
+    supersedes_observation_id:
+      revisionNumber === 1
+        ? null
+        : `sha256:${input.sourceId}|${input.seriesKey}|${input.locationKey}|${period.start}|${String(revisionNumber - 1)}`,
   });
 }
 
@@ -273,16 +287,19 @@ void test("projects the latest 24 observations for every exact tuple", () => {
 
 void test("is byte deterministic across source, row and wall-clock order", () => {
   const rows = completeObservationsBySource();
-  const originalNow = Date.now;
-  try {
-    Date.now = () => Date.parse("2031-01-01T00:00:00.000Z");
-    const first = projectErpSnackV2Observations({
+  const firstClock = "2031-01-01T00:00:00.000Z";
+  const first = withAmbientClock(firstClock, () => {
+    assert.equal(new Date().toISOString(), firstClock);
+    return projectErpSnackV2Observations({
       observationsBySource: rows,
       snapshot: snapshot(),
       sources: sources(),
     });
-    Date.now = () => Date.parse("2042-12-31T23:59:59.999Z");
-    const reversed = projectErpSnackV2Observations({
+  });
+  const secondClock = "2042-12-31T23:59:59.999Z";
+  const reversed = withAmbientClock(secondClock, () => {
+    assert.equal(new Date().toISOString(), secondClock);
+    return projectErpSnackV2Observations({
       observationsBySource: new Map(
         [...rows.entries()].reverse().map(([sourceId, observations]) => [
           sourceId,
@@ -292,11 +309,9 @@ void test("is byte deterministic across source, row and wall-clock order", () =>
       snapshot: snapshot(),
       sources: [...sources()].reverse(),
     });
+  });
 
-    assert.equal(canonicalJson(first), canonicalJson(reversed));
-  } finally {
-    Date.now = originalNow;
-  }
+  assert.equal(canonicalJson(first), canonicalJson(reversed));
 });
 
 void test("fails closed with stable codes for either missing dataset or one missing tuple", () => {
@@ -330,6 +345,65 @@ void test("fails closed with stable codes for either missing dataset or one miss
     }),
     /consumer_v2_profile_tuple_missing:vegetables\|ma:city:tetouan/,
   );
+});
+
+void test("rejects a tuple with only 23 distinct monthly periods", () => {
+  const rows = completeObservationsBySource();
+  const sourceRows = rows.get(LEGACY_SOURCE_ID) ?? assert.fail("missing legacy rows");
+  rows.set(
+    LEGACY_SOURCE_ID,
+    sourceRows.filter(
+      (row) =>
+        row.series_key !== "hcp.ipc2017.0117" ||
+        row.location_key !== "ma:city:tetouan" ||
+        row.period_start >= "2023-01-01",
+    ),
+  );
+
+  assert.throws(
+    () => projectErpSnackV2Observations({
+      observationsBySource: rows,
+      snapshot: snapshot(),
+      sources: sources(),
+    }),
+    /consumer_v2_profile_history_incomplete:vegetables\|ma:city:tetouan:23/,
+  );
+});
+
+void test("selects only the current revision for each of 24 distinct months", () => {
+  const rows = completeObservationsBySource();
+  rows.get(OFFICIAL_SOURCE_ID)?.push(
+    observation({
+      seriesKey: "hcp.ipc2017.01",
+      locationKey: "ma",
+      monthOffset: 24,
+      sourceId: OFFICIAL_SOURCE_ID,
+      revisionNumber: 2,
+      value: "999",
+    }),
+  );
+
+  const payload = projectErpSnackV2Observations({
+    observationsBySource: rows,
+    snapshot: snapshot(),
+    sources: sources(),
+  });
+  const officialFood = payload.observations.filter(
+    (row) => row.category === "food_overall" && row.location_key === "ma",
+  );
+
+  assert.equal(officialFood.length, 24);
+  assert.equal(new Set(officialFood.map((row) => row.period_start)).size, 24);
+  assert.equal(officialFood[0]?.period_start, "2024-09-01");
+  assert.equal(officialFood.at(-1)?.revision_number, 2);
+  assert.equal(officialFood.at(-1)?.value, "999");
+  assert.equal(
+    officialFood.some(
+      (row) => row.period_start === "2026-08-01" && row.revision_number === 1,
+    ),
+    false,
+  );
+  assert.equal(payload.observations.length, 360);
 });
 
 void test("rejects unexpected source inputs and snapshot dataset mismatches", () => {
@@ -369,12 +443,269 @@ void test("rejects unexpected source inputs and snapshot dataset mismatches", ()
   );
 });
 
+void test("rejects disabled, non-official and non-redistributable source definitions", () => {
+  const invalidCases: Array<{
+    mutate: (source: SourceDefinition) => void;
+    error: RegExp;
+  }> = [
+    {
+      mutate: (source) => { source.enabled = false; },
+      error: /consumer_v2_source_not_qualified:hcp-ipc-2017-monthly/,
+    },
+    {
+      mutate: (source) => { source.authority_level = "licensed"; },
+      error: /consumer_v2_source_not_qualified:hcp-ipc-2017-monthly/,
+    },
+    {
+      mutate: (source) => { source.access_mode = "disabled"; },
+      error: /consumer_v2_source_not_qualified:hcp-ipc-2017-monthly/,
+    },
+    {
+      mutate: (source) => { source.licence.permits_redistribution = false; },
+      error: /consumer_v2_redistribution_not_permitted:hcp-ipc-2017-monthly/,
+    },
+  ];
+
+  for (const invalidCase of invalidCases) {
+    const candidateSources = structuredClone(sources());
+    const legacy = candidateSources[0] ?? assert.fail("missing legacy source");
+    invalidCase.mutate(legacy);
+    assert.throws(
+      () => projectErpSnackV2Observations({
+        observationsBySource: completeObservationsBySource(),
+        snapshot: snapshot(),
+        sources: candidateSources,
+      }),
+      invalidCase.error,
+    );
+  }
+});
+
+void test("rejects unexpected licence identity and evidence", () => {
+  for (const mutate of [
+    (source: SourceDefinition) => { source.licence.id = "INVALID"; },
+    (source: SourceDefinition) => {
+      source.licence.evidence_url = "https://example.invalid/untrusted";
+    },
+    (source: SourceDefinition) => {
+      source.licence.permits_internal_derived_use = false;
+    },
+  ]) {
+    const candidateSources = structuredClone(sources());
+    const official = candidateSources[1] ?? assert.fail("missing official source");
+    mutate(official);
+    assert.throws(
+      () => projectErpSnackV2Observations({
+        observationsBySource: completeObservationsBySource(),
+        snapshot: snapshot(),
+        sources: candidateSources,
+      }),
+      /consumer_v2_licence_mismatch:hcp-ipc-2017-official-g1-monthly/,
+    );
+  }
+});
+
+void test("rejects quarantined snapshot state and blocking source health", () => {
+  const invalidCases = [
+    {
+      state: "quarantined" as const,
+      health_status: "quarantined" as const,
+      error: /consumer_v2_snapshot_source_state_invalid:hcp-ipc-2017-official-g1-monthly:quarantined/,
+    },
+    {
+      state: "published" as const,
+      health_status: "licence_blocked" as const,
+      error: /consumer_v2_snapshot_source_health_invalid:hcp-ipc-2017-official-g1-monthly:licence_blocked/,
+    },
+  ];
+
+  for (const invalidCase of invalidCases) {
+    const invalidSnapshot = snapshot({
+      sources: snapshot().sources.map((source) =>
+        source.source_id === OFFICIAL_SOURCE_ID
+          ? {
+              ...source,
+              state: invalidCase.state,
+              health_status: invalidCase.health_status,
+            }
+          : source,
+      ),
+    });
+    assert.throws(
+      () => projectErpSnackV2Observations({
+        observationsBySource: completeObservationsBySource(),
+        snapshot: invalidSnapshot,
+        sources: sources(),
+      }),
+      invalidCase.error,
+    );
+  }
+});
+
+function withAmbientClock<T>(isoTimestamp: string, callback: () => T): T {
+  const NativeDate = globalThis.Date;
+  class FixedDate extends NativeDate {
+    constructor(value?: string | number | Date) {
+      if (value === undefined) super(isoTimestamp);
+      else if (value instanceof NativeDate) super(value.getTime());
+      else super(value);
+    }
+
+    static override now(): number {
+      return NativeDate.parse(isoTimestamp);
+    }
+  }
+  globalThis.Date = FixedDate as DateConstructor;
+  try {
+    return callback();
+  } finally {
+    globalThis.Date = NativeDate;
+  }
+}
+
 async function malformedDataDir(t: TestContext): Promise<string> {
   const dataDir = await mkdtemp(join(tmpdir(), "erp-snack-consumer-v2-"));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   await mkdir(join(dataDir, "published"), { recursive: true });
   await writeFile(join(dataDir, "published", "unexpected.txt"), "unverified\n");
   return dataDir;
+}
+
+const LEGACY_SERIES_LABELS = [
+  "(01) PRODUITS ALIMENTAIRES ET BOISSONS NON ALCOOLISEES",
+  "(0111) PAIN ET CEREALES",
+  "(0113) POISSON ET FRUITS DE MER",
+  "(0115) HUILES ET GRAISSES",
+  "(0117) LEGUMES",
+] as const;
+const LEGACY_LOCATION_LABELS = ["National", "Al Hoceima", "Tétouan"] as const;
+const MONTH_TOKENS = [
+  "Janv",
+  "Févr",
+  "Mars",
+  "Avr",
+  "Mai",
+  "Juin",
+  "Juill",
+  "Août",
+  "Sept",
+  "Oct",
+  "Nov",
+  "Déc",
+] as const;
+
+function legacyMonthHeader(offset: number): string {
+  const period = monthPeriod(LEGACY_SOURCE_ID, offset).start;
+  const monthIndex = Number(period.slice(5, 7)) - 1;
+  const token = MONTH_TOKENS[monthIndex] ?? assert.fail("missing month token");
+  return `${token}-${period.slice(0, 4)}`;
+}
+
+async function createLegacyProfileWorkbook(): Promise<Uint8Array> {
+  const workbook = new ExcelJS.Workbook();
+  const data = workbook.addWorksheet("Data");
+  data.getCell("A1").value = "Indice des prix à la consommation";
+  data.addRow([]);
+  data.addRow([]);
+  data.addRow([
+    "Villes",
+    "Divisions et groupes de produits",
+    "2017",
+    ...Array.from({ length: 25 }, (_, offset) => legacyMonthHeader(offset)),
+  ]);
+  for (const location of LEGACY_LOCATION_LABELS) {
+    for (const series of LEGACY_SERIES_LABELS) {
+      data.addRow([
+        location,
+        series,
+        100,
+        ...Array.from({ length: 25 }, (_, offset) => 100 + offset),
+      ]);
+    }
+  }
+  const metadata = workbook.addWorksheet("Metadata");
+  metadata.addRows([
+    ["L'indicateur", "Indice des prix à la consommation"],
+    ["Définition", "Indice base 100"],
+    ["Periodicité", "Mensuelle"],
+    ["Unité", "Indice"],
+    ["Source", "Haut-Commissariat au Plan"],
+  ]);
+  return new Uint8Array(await workbook.xlsx.writeBuffer());
+}
+
+function createOfficialFetchFixture(workbookBytes: Uint8Array): typeof fetch {
+  return () => Promise.resolve(new Response(workbookBytes, {
+    status: 200,
+    headers: {
+      "content-length": String(workbookBytes.byteLength),
+      "content-type":
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    },
+  }));
+}
+
+async function validDataHubFixture(t: TestContext): Promise<{
+  dataDir: string;
+  snapshot: SnapshotIndex;
+}> {
+  const dataDir = await mkdtemp(join(tmpdir(), "erp-snack-consumer-v2-valid-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const legacyRun = await runRemoteIngestion({
+    sourceId: LEGACY_SOURCE_ID,
+    dataDir,
+    fetchImpl: createCkanFetchFixture(await createLegacyProfileWorkbook()),
+    now: SNAPSHOT_CREATED_AT,
+  });
+  const officialPeriods = Array.from(
+    { length: 25 },
+    (_, offset) => monthPeriod(OFFICIAL_SOURCE_ID, offset).start
+      .slice(0, 7)
+      .replace("-", "/"),
+  );
+  const officialRun = await runRemoteIngestion({
+    sourceId: OFFICIAL_SOURCE_ID,
+    dataDir,
+    fetchImpl: createOfficialFetchFixture(
+      await createHcpOfficialIpcFixture("ipc-2017-official-g1", {
+        periods: officialPeriods,
+      }),
+    ),
+    now: SNAPSHOT_CREATED_AT,
+  });
+  assert.equal(legacyRun.state, "published");
+  assert.equal(officialRun.state, "published");
+  const legacyDatasetId = legacyRun.dataset_id ?? assert.fail("missing legacy dataset");
+  const officialDatasetId = officialRun.dataset_id ?? assert.fail("missing official dataset");
+
+  return {
+    dataDir,
+    snapshot: snapshot({
+      sources: [
+        {
+          source_id: LEGACY_SOURCE_ID,
+          run_id: legacyRun.run_id,
+          state: legacyRun.state,
+          artifact_sha256: legacyRun.artifact_sha256,
+          dataset_id: legacyDatasetId,
+          health_status: "stale",
+          warning_codes: ["source_stale"],
+          failure_code: legacyRun.failure_code,
+        },
+        {
+          source_id: OFFICIAL_SOURCE_ID,
+          run_id: officialRun.run_id,
+          state: officialRun.state,
+          artifact_sha256: officialRun.artifact_sha256,
+          dataset_id: officialDatasetId,
+          health_status: "healthy",
+          warning_codes: [],
+          failure_code: officialRun.failure_code,
+        },
+      ],
+      dataset_ids: [legacyDatasetId, officialDatasetId].sort(),
+    }),
+  };
 }
 
 void test("validates the data hub state before loading snapshot datasets", async (t) => {
@@ -386,5 +717,43 @@ void test("validates the data hub state before loading snapshot datasets", async
       sourceTag: SOURCE_TAG,
     }),
     /unexpected_data_hub_file:published\/unexpected.txt/,
+  );
+});
+
+void test("loads and parses both verified snapshot datasets before projection", async (t) => {
+  const fixture = await validDataHubFixture(t);
+  const payload = await buildErpSnackConsumerV2({
+    dataDir: fixture.dataDir,
+    snapshot: fixture.snapshot,
+    sourceTag: SOURCE_TAG,
+  });
+
+  assert.equal(payload.observations.length, 360);
+  assert.deepEqual(payload.sources.map((source) => source.source_id), [
+    LEGACY_SOURCE_ID,
+    OFFICIAL_SOURCE_ID,
+  ]);
+  assert.equal(
+    new Set(payload.observations.map((row) => row.artifact_sha256)).size,
+    2,
+  );
+
+  const legacyDatasetId = fixture.snapshot.sources[0]?.dataset_id ??
+    assert.fail("missing legacy dataset");
+  const mismatchedSnapshot = snapshot({
+    sources: fixture.snapshot.sources.map((source) =>
+      source.source_id === OFFICIAL_SOURCE_ID
+        ? { ...source, dataset_id: legacyDatasetId }
+        : source,
+    ),
+    dataset_ids: fixture.snapshot.dataset_ids,
+  });
+  await assert.rejects(
+    () => buildErpSnackConsumerV2({
+      dataDir: fixture.dataDir,
+      snapshot: mismatchedSnapshot,
+      sourceTag: SOURCE_TAG,
+    }),
+    /consumer_v2_verified_dataset_missing:hcp-ipc-2017-official-g1-monthly/,
   );
 });
