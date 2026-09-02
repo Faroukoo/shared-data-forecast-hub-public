@@ -228,27 +228,46 @@ jobs:
           utc_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           release_tag="data-${utc_stamp}-${snapshot_id:0:12}"
           gh release create "$release_tag" --repo "$GITHUB_REPOSITORY" --draft --title "$release_tag" --notes "snapshot_id: $snapshot_id"
+          gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" \
+            --json body,databaseId,isDraft,isPrerelease,name,tagName > "$RUNNER_TEMP/new-release-created.json"
+          release_id="$(node --input-type=module -e '
+            import fs from "node:fs";
+            const [path, expectedTag, snapshotId] = process.argv.slice(1);
+            const release = JSON.parse(fs.readFileSync(path, "utf8"));
+            if (!Number.isSafeInteger(release.databaseId) || release.isDraft !== true || release.isPrerelease !== false) process.exit(4);
+            if (release.tagName !== expectedTag || release.name !== expectedTag || release.body !== `snapshot_id: ${snapshotId}`) process.exit(4);
+            process.stdout.write(String(release.databaseId));
+          ' "$RUNNER_TEMP/new-release-created.json" "$release_tag" "$snapshot_id")"
           gh release upload "$release_tag" --repo "$GITHUB_REPOSITORY" \
             "$output_dir/snapshot-index.json" \
             "$output_dir/$archive_name.sha256" \
             "$output_dir/$archive_name"
-          gh api "/repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" > "$RUNNER_TEMP/new-release.json"
+          gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id" > "$RUNNER_TEMP/new-release.json"
           node --input-type=module -e '
             import crypto from "node:crypto";
             import fs from "node:fs";
             import path from "node:path";
-            const [releasePath, directory, archiveName] = process.argv.slice(1);
+            const [releasePath, directory, archiveName, expectedId, expectedTag, snapshotId] = process.argv.slice(1);
             const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
             const names = ["snapshot-index.json", `${archiveName}.sha256`, archiveName];
-            if (release.draft !== true || release.assets.length !== 3) process.exit(4);
+            if (release.id !== Number(expectedId) || release.draft !== true || release.prerelease !== false || release.assets.length !== 3) process.exit(4);
+            if (release.tag_name !== expectedTag || release.name !== expectedTag || release.body !== `snapshot_id: ${snapshotId}`) process.exit(4);
             for (const name of names) {
               const asset = release.assets.find((item) => item.name === name);
               if (!asset) process.exit(4);
               const digest = crypto.createHash("sha256").update(fs.readFileSync(path.join(directory, name))).digest("hex");
               if (asset.digest !== `sha256:${digest}`) process.exit(4);
             }
-          ' "$RUNNER_TEMP/new-release.json" "$output_dir" "$archive_name"
-          gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" --draft=false
+          ' "$RUNNER_TEMP/new-release.json" "$output_dir" "$archive_name" "$release_id" "$release_tag" "$snapshot_id"
+          gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false > "$RUNNER_TEMP/published-release.json"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const [path, expectedId, expectedTag, snapshotId] = process.argv.slice(1);
+            const release = JSON.parse(fs.readFileSync(path, "utf8"));
+            if (release.id !== Number(expectedId) || release.draft !== false || release.prerelease !== false || release.assets.length !== 3) process.exit(4);
+            if (release.tag_name !== expectedTag || release.name !== expectedTag || release.body !== `snapshot_id: ${snapshotId}`) process.exit(4);
+          ' "$RUNNER_TEMP/published-release.json" "$release_id" "$release_tag" "$snapshot_id"
       - name: Return terminal production status
         if: always()
         run: |
