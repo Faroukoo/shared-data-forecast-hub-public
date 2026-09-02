@@ -126,3 +126,12 @@ void test("tests cannot call a literal remote HTTP endpoint", async () => {
     assert.doesNotMatch(source, directRemoteCall, file);
   }
 });
+
+void test("the adapter public boundary exposes parallel v1 and v2 projections", async () => {
+  const adapters = await import("@data-hub/adapters");
+
+  assert.equal(typeof adapters.projectErpSnackObservations, "function");
+  assert.equal(typeof adapters.buildErpSnackConsumer, "function");
+  assert.equal(typeof adapters.projectErpSnackV2Observations, "function");
+  assert.equal(typeof adapters.buildErpSnackConsumerV2, "function");
+});
