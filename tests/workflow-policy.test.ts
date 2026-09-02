@@ -170,7 +170,7 @@ function shellWords(command: string): string[] {
 
 function ghApiMethod(words: readonly string[], command: string): string {
   const explicitMethods: string[] = [];
-  let hasField = false;
+  let hasRequestBody = false;
 
   for (let index = 2; index < words.length; index += 1) {
     const word = words[index] ?? "";
@@ -190,16 +190,20 @@ function ghApiMethod(words: readonly string[], command: string): string {
       word === "-f" ||
       word === "--field" ||
       word === "--raw-field" ||
+      word === "--input" ||
       /^-[Ff].+/.test(word) ||
       word.startsWith("--field=") ||
-      word.startsWith("--raw-field=")
+      word.startsWith("--raw-field=") ||
+      word.startsWith("--input=")
     ) {
-      hasField = true;
+      hasRequestBody = true;
     }
   }
 
   assert.ok(explicitMethods.length <= 1, `multiple methods: ${command}`);
-  return (explicitMethods[0] ?? (hasField ? "POST" : "GET")).toUpperCase();
+  return (
+    explicitMethods[0] ?? (hasRequestBody ? "POST" : "GET")
+  ).toUpperCase();
 }
 
 function logicalGhApiCommands(run: string): GhApiCommand[] {
@@ -746,6 +750,14 @@ void test("consumer release policy rejects mutations of every guarded write inva
     {
       name: "an implicit POST release write is added",
       apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "an input-backed POST release write is added",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" --input mutation.json'),
+    },
+    {
+      name: "an equals input-backed POST release write is added",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" --input=mutation.json'),
     },
     {
       name: "the PATCH mutates a second field",
