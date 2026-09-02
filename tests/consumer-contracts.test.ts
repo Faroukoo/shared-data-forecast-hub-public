@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   CONSUMER_CONTRACT,
   CONSUMER_PROFILE,
+  CONSUMER_V2_CONTRACT,
+  CONSUMER_V2_PROFILE,
   ConsumerIndexSchema,
   ConsumerPayloadSchema,
   SCHEMA_VERSION,
@@ -253,5 +255,26 @@ void test("consumer index binds the source tag suffix to the snapshot id", () =>
         source_snapshot_id: "f".repeat(64),
       }),
     /source_snapshot_tag_snapshot_mismatch/,
+  );
+});
+
+void test("consumer v1 remains isolated from v2 literals and filename", () => {
+  assert.throws(() =>
+    ConsumerPayloadSchema.parse({
+      ...validPayload(),
+      consumer_contract: CONSUMER_V2_CONTRACT,
+    }),
+  );
+  assert.throws(() =>
+    ConsumerPayloadSchema.parse({
+      ...validPayload(),
+      profile_id: CONSUMER_V2_PROFILE,
+    }),
+  );
+  assert.throws(() =>
+    ConsumerIndexSchema.parse({
+      ...validIndex(),
+      payload: { ...validIndex().payload, name: "consumer-v2.json" },
+    }),
   );
 });

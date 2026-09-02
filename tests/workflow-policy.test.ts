@@ -43,6 +43,301 @@ function commands(job: unknown): string {
     .join("\n");
 }
 
+function mutateNth(
+  source: string,
+  before: string,
+  after: string,
+  occurrence: number,
+): string {
+  let index = -1;
+  for (let current = 0; current <= occurrence; current += 1) {
+    index = source.indexOf(before, index + 1);
+  }
+  assert.notEqual(index, -1, `mutation target not found: ${before}`);
+  return `${source.slice(0, index)}${after}${source.slice(index + before.length)}`;
+}
+
+function mutateFirst(source: string, before: string, after: string): string {
+  return mutateNth(source, before, after, 0);
+}
+
+const EXPECTED_CONTRACT_CASE = [
+  'case "$contract_version" in',
+  "  v1)",
+  '    payload_name="consumer-v1.json"',
+  '    checksum_name="consumer-v1.json.sha256"',
+  '    consumer_tag_prefix="consumer-v1"',
+  "    consumer_tag_pattern='^consumer-v1-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'",
+  "    ;;",
+  "  v2)",
+  '    payload_name="consumer-v2.json"',
+  '    checksum_name="consumer-v2.json.sha256"',
+  '    consumer_tag_prefix="consumer-v2"',
+  "    consumer_tag_pattern='^consumer-v2-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'",
+  "    ;;",
+  "  *)",
+  '    echo "unsupported consumer contract version" >&2',
+  "    exit 4",
+  "    ;;",
+  "esac",
+] as const;
+
+function namedStep(job: unknown, name: string): Record<string, unknown> {
+  const matches = steps(job).filter((step) => step.name === name);
+  assert.equal(matches.length, 1, name);
+  return matches[0] as Record<string, unknown>;
+}
+
+function stepRun(step: Record<string, unknown>, label: string): string {
+  assert.equal(typeof step.run, "string", label);
+  return step.run as string;
+}
+
+function assertClosedContractCase(run: string, label: string): void {
+  const lines = run.split("\n");
+  const caseStart = lines.indexOf('case "$contract_version" in');
+  assert.notEqual(caseStart, -1, `${label}.case`);
+  const caseEnd = lines.indexOf("esac", caseStart);
+  assert.notEqual(caseEnd, -1, `${label}.esac`);
+  assert.deepEqual(
+    lines.slice(caseStart, caseEnd + 1),
+    EXPECTED_CONTRACT_CASE,
+    `${label}.case arms`,
+  );
+  const firstGh = lines.findIndex((line) => line.trimStart().startsWith("gh "));
+  assert.notEqual(firstGh, -1, `${label}.first gh`);
+  assert.ok(caseEnd < firstGh, `${label}.case before gh`);
+}
+
+function boundedShellIf(
+  lines: readonly string[],
+  opening: string,
+): { start: number; end: number; lines: readonly string[] } {
+  const start = lines.findIndex((line) => line.trim() === opening);
+  assert.notEqual(start, -1, opening);
+  let depth = 0;
+  for (let index = start; index < lines.length; index += 1) {
+    const line = lines[index]?.trim() ?? "";
+    if (/^if\b.*; then$/.test(line)) depth += 1;
+    if (line === "fi") {
+      depth -= 1;
+      if (depth === 0) {
+        return { start, end: index, lines: lines.slice(start, index + 1) };
+      }
+    }
+  }
+  assert.fail(`unterminated shell block: ${opening}`);
+}
+
+type GhApiCommand = {
+  start: number;
+  method: string;
+  text: string;
+};
+
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+
+  for (const character of command) {
+    if (escaped) {
+      word += character;
+      escaped = false;
+    } else if (character === "\\" && quote !== "'") {
+      escaped = true;
+    } else if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+      else word += character;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+    } else if (/\s/.test(character)) {
+      if (word !== "") {
+        words.push(word);
+        word = "";
+      }
+    } else {
+      word += character;
+    }
+  }
+
+  assert.equal(quote, undefined, `unterminated quote: ${command}`);
+  assert.equal(escaped, false, `unterminated escape: ${command}`);
+  if (word !== "") words.push(word);
+  return words;
+}
+
+function ghApiMethod(words: readonly string[], command: string): string {
+  const explicitMethods: string[] = [];
+  let hasRequestBody = false;
+
+  for (let index = 2; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (word === "--method" || word === "-X") {
+      const value = words[index + 1];
+      assert.notEqual(value, undefined, `missing method value: ${command}`);
+      explicitMethods.push(value as string);
+      index += 1;
+    } else if (word.startsWith("--method=")) {
+      explicitMethods.push(word.slice("--method=".length));
+    } else if (word.startsWith("-X=")) {
+      explicitMethods.push(word.slice("-X=".length));
+    } else if (word.startsWith("-X") && word.length > 2) {
+      explicitMethods.push(word.slice(2));
+    } else if (
+      word === "-F" ||
+      word === "-f" ||
+      word === "--field" ||
+      word === "--raw-field" ||
+      word === "--input" ||
+      /^-[Ff].+/.test(word) ||
+      word.startsWith("--field=") ||
+      word.startsWith("--raw-field=") ||
+      word.startsWith("--input=")
+    ) {
+      hasRequestBody = true;
+    }
+  }
+
+  assert.ok(explicitMethods.length <= 1, `multiple methods: ${command}`);
+  return (
+    explicitMethods[0] ?? (hasRequestBody ? "POST" : "GET")
+  ).toUpperCase();
+}
+
+function logicalGhApiCommands(run: string): GhApiCommand[] {
+  const lines = run.split("\n");
+  const commands: GhApiCommand[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const start = index;
+    const parts: string[] = [];
+    let line = lines[index]?.trim() ?? "";
+    while (line.endsWith("\\")) {
+      parts.push(line.slice(0, -1).trimEnd());
+      index += 1;
+      assert.ok(index < lines.length, "unterminated logical shell command");
+      line = lines[index]?.trim() ?? "";
+    }
+    parts.push(line);
+    const text = parts.join(" ");
+    if (!/^gh\s+api(?:\s|$)/.test(text)) continue;
+    const words = shellWords(text);
+    assert.deepEqual(words.slice(0, 2), ["gh", "api"]);
+    commands.push({ start, method: ghApiMethod(words, text), text });
+  }
+
+  return commands;
+}
+
+function assertHardenedConsumerReleasePolicy(
+  workflow: Record<string, unknown>,
+): void {
+  const consumerJobs = jobs(workflow);
+  const verifyStep = namedStep(
+    consumerJobs.verify,
+    "Restore source and verify deterministic consumer bundle",
+  );
+  const publishStep = namedStep(
+    consumerJobs.publish,
+    "Restore, verify and publish immutable consumer release",
+  );
+
+  assert.deepEqual(record(verifyStep.env, "verify.env"), {
+    GH_TOKEN: "${{ github.token }}",
+    SOURCE_RELEASE_TAG: "${{ inputs.source_release_tag }}",
+    CONTRACT_VERSION: "${{ inputs.contract_version }}",
+    CODE_SHA: "${{ github.sha }}",
+  });
+  assert.deepEqual(record(publishStep.env, "publish.env"), {
+    GH_TOKEN: "${{ github.token }}",
+    EVENT_NAME: "${{ github.event_name }}",
+    REQUESTED_SOURCE_TAG: "${{ inputs.source_release_tag }}",
+    REQUESTED_CONTRACT_VERSION: "${{ inputs.contract_version }}",
+    MANUAL_CODE_SHA: "${{ github.sha }}",
+    AUTOMATIC_CODE_SHA: "${{ github.event.workflow_run.head_sha }}",
+  });
+
+  const verifyRun = stepRun(verifyStep, "verify.run");
+  const publishRun = stepRun(publishStep, "publish.run");
+  const verifyLines = verifyRun.split("\n");
+  const verifyCaseStart = verifyLines.indexOf('case "$contract_version" in');
+  assert.notEqual(verifyCaseStart, -1, "verify.case");
+  assert.equal(
+    verifyLines[verifyCaseStart - 1],
+    'contract_version="$CONTRACT_VERSION"',
+    "verify contract binding before case",
+  );
+  assertClosedContractCase(verifyRun, "verify");
+  assertClosedContractCase(publishRun, "publish");
+
+  const publishLines = publishRun.split("\n");
+  const apiWrites = logicalGhApiCommands(publishRun).filter(
+    (command) => command.method !== "GET",
+  );
+  assert.equal(apiWrites.length, 1, "one gh api write command");
+  const patchCommand = apiWrites[0] as GhApiCommand;
+  assert.equal(patchCommand.method, "PATCH", "the only gh api write is PATCH");
+  assert.equal(
+    patchCommand.text,
+    'gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F prerelease=false > "$work_root/after-promotion.json"',
+    "PATCH release surface and body",
+  );
+  const patchIndex = patchCommand.start;
+
+  const existingReleaseBlock = boundedShellIf(
+    publishLines,
+    'if [ "$existing_release_id" != "none" ]; then',
+  );
+  const guardLines = existingReleaseBlock.lines
+    .map((line) => line.trim())
+    .filter((line) => line === 'test "$contract_version" = "v1"');
+  assert.equal(guardLines.length, 1, "one v1 guard in existing release block");
+  const guardIndex = existingReleaseBlock.lines.findIndex(
+    (line) => line.trim() === 'test "$contract_version" = "v1"',
+  );
+  assert.ok(existingReleaseBlock.start + guardIndex < patchIndex, "v1 guard before PATCH");
+
+  const createMentions = publishLines
+    .map((line, index) => ({ line: line.trim(), index }))
+    .filter(({ line }) => line.startsWith("gh release create "));
+  assert.equal(createMentions.length, 1, "one release creation command");
+  const createIndex = createMentions[0]?.index ?? -1;
+  assert.deepEqual(
+    publishLines.slice(createIndex, createIndex + 8).map((line) => line.trim()),
+    [
+      'gh release create "$consumer_tag" \\',
+      '--target "$code_sha" \\',
+      '--title "$consumer_tag" \\',
+      '--notes "Verified ERP-Snack observation bundle from $source_tag. Payload SHA-256: $payload_sha" \\',
+      '"${release_flags[@]}" \\',
+      '"$bundle_dir/consumer-index.json" \\',
+      '"$bundle_dir/$payload_name" \\',
+      '"$bundle_dir/$checksum_name"',
+    ],
+    "release creation arguments",
+  );
+
+  const releaseFlagInitializers = publishLines
+    .map((line, index) => ({ line: line.trim(), index }))
+    .filter(({ line }) => line === "release_flags=()");
+  assert.equal(releaseFlagInitializers.length, 1, "one release flag initializer");
+  const releaseFlagsIndex = releaseFlagInitializers[0]?.index ?? -1;
+  assert.deepEqual(
+    publishLines.slice(releaseFlagsIndex, createIndex).map((line) => line.trim()),
+    [
+      "release_flags=()",
+      'expected_prerelease="false"',
+      'if [ "$operation" = "manual" ]; then',
+      "release_flags+=(--prerelease)",
+      'expected_prerelease="true"',
+      "fi",
+    ],
+    "manual prerelease flags remain live until creation",
+  );
+}
+
 void test("production workflow grants writes only to publisher and health jobs", async () => {
   const workflow = await loadWorkflow(PRODUCTION_PATH);
   assert.deepEqual(workflow.permissions, {});
@@ -159,6 +454,11 @@ void test("consumer releases run only from explicit dispatch or trusted refresh 
     record(inputs.source_release_tag, "source_release_tag").required,
     true,
   );
+  const contractVersion = record(inputs.contract_version, "contract_version");
+  assert.equal(contractVersion.type, "choice");
+  assert.deepEqual(contractVersion.options, ["v1", "v2"]);
+  assert.equal(contractVersion.default, "v1");
+  assert.equal(contractVersion.required, true);
 
   const workflowRun = record(triggers.workflow_run, "workflow_run");
   assert.deepEqual(workflowRun.workflows, ["Verified public data refresh"]);
@@ -234,7 +534,7 @@ void test("consumer jobs restore and verify one exact three-asset data release i
     assert.match(jobCommands, /gh api --paginate --slurp/);
     assert.match(
       jobCommands,
-      /const consumerTagPattern = \/\^consumer-v1-/,
+      /const consumerTagPattern = new RegExp\(consumerTagPatternSource\)/,
     );
     assert.doesNotMatch(jobCommands, /\.\/\.data-hub|\$GITHUB_WORKSPACE\/.data-hub/);
   }
@@ -276,6 +576,227 @@ void test("consumer jobs pass their validated selected tag to the consumer CLI",
     commands(consumerJobs.publish),
     /--source-tag "\$source_tag"/,
   );
+});
+
+void test("consumer jobs derive their contract assets from a closed version choice before GitHub access", async () => {
+  const workflow = await loadWorkflow(CONSUMER_PATH);
+  const consumerJobs = jobs(workflow);
+
+  for (const jobName of ["verify", "publish"]) {
+    const jobCommands = commands(consumerJobs[jobName]);
+    assert.match(jobCommands, /case "\$contract_version" in/);
+    assert.match(
+      jobCommands,
+      /v1\)[\s\S]*payload_name="consumer-v1\.json"[\s\S]*checksum_name="consumer-v1\.json\.sha256"[\s\S]*consumer_tag_prefix="consumer-v1"/,
+    );
+    assert.match(
+      jobCommands,
+      /v2\)[\s\S]*payload_name="consumer-v2\.json"[\s\S]*checksum_name="consumer-v2\.json\.sha256"[\s\S]*consumer_tag_prefix="consumer-v2"/,
+    );
+    assert.match(jobCommands, /\*\)[\s\S]*exit 4/);
+    assert.match(jobCommands, /--contract-version "\$contract_version"/);
+    assert.match(jobCommands, /--payload "\$bundle_dir\/\$payload_name"/);
+    assert.match(jobCommands, /--checksum "\$bundle_dir\/\$checksum_name"/);
+    assert.match(
+      jobCommands,
+      /const expected = \["consumer-index\.json", payloadName, checksumName\]/,
+    );
+    assert.ok(jobCommands.indexOf('case "$contract_version" in') < jobCommands.indexOf("gh api"));
+    assert.doesNotMatch(jobCommands, /actions\/(?:upload-artifact|cache)/);
+  }
+});
+
+void test("consumer v2 is manual candidate-only while automatic stable publication remains v1", async () => {
+  const workflow = await loadWorkflow(CONSUMER_PATH);
+  const publishJob = record(jobs(workflow).publish, "publish");
+  const publishEnvironment = record(
+    steps(publishJob).find((step) => typeof step.run === "string" && step.run.includes("gh release create"))?.env,
+    "publish.env",
+  );
+  assert.equal(
+    publishEnvironment.REQUESTED_CONTRACT_VERSION,
+    "${{ inputs.contract_version }}",
+  );
+
+  const publishCommands = commands(publishJob);
+  assert.match(
+    publishCommands,
+    /operation="manual"[\s\S]*contract_version="\$REQUESTED_CONTRACT_VERSION"/,
+  );
+  assert.match(
+    publishCommands,
+    /operation="automatic"[\s\S]*contract_version="v1"/,
+  );
+  assert.match(
+    publishCommands,
+    /\[ "\$contract_version" = "v2" \] && \[ "\$operation" != "manual" \]/,
+  );
+  assert.match(
+    publishCommands,
+    /if \[ "\$operation" = "manual" \]; then[\s\S]*release_flags\+=\(--prerelease\)/,
+  );
+  const stableV1Guard = publishCommands.indexOf('test "$contract_version" = "v1"');
+  const promotion = publishCommands.indexOf("gh api --method PATCH");
+  assert.ok(stableV1Guard >= 0);
+  assert.ok(promotion > stableV1Guard);
+});
+
+void test("consumer release policy rejects mutations of every guarded write invariant", async (t) => {
+  const source = await readFile(CONSUMER_PATH, "utf8");
+  const workflow = record(parse(source), CONSUMER_PATH);
+  assert.doesNotThrow(() => {
+    assertHardenedConsumerReleasePolicy(workflow);
+  });
+
+  const mutations: ReadonlyArray<{
+    name: string;
+    apply: (value: string) => string;
+  }> = [
+    {
+      name: "verify contract input is no longer bound",
+      apply: (value) => mutateFirst(value, "          CONTRACT_VERSION: ${{ inputs.contract_version }}\n", ""),
+    },
+    {
+      name: "publish contract input is no longer bound",
+      apply: (value) => mutateFirst(value, "          REQUESTED_CONTRACT_VERSION: ${{ inputs.contract_version }}\n", ""),
+    },
+    {
+      name: "verify no longer assigns the contract input before its case",
+      apply: (value) => mutateFirst(value, '          contract_version="$CONTRACT_VERSION"\n', ""),
+    },
+    {
+      name: "verify replaces the contract input with v1 before its case",
+      apply: (value) => mutateFirst(value, '          contract_version="$CONTRACT_VERSION"', '          contract_version="v1"'),
+    },
+    {
+      name: "v1 payload assignment changes",
+      apply: (value) => mutateFirst(value, '              payload_name="consumer-v1.json"', '              payload_name="consumer-v2.json"'),
+    },
+    {
+      name: "v2 checksum assignment changes",
+      apply: (value) => mutateFirst(value, '              checksum_name="consumer-v2.json.sha256"', '              checksum_name="consumer-v1.json.sha256"'),
+    },
+    {
+      name: "v2 tag prefix changes",
+      apply: (value) => mutateFirst(value, '              consumer_tag_prefix="consumer-v2"', '              consumer_tag_prefix="consumer-v1"'),
+    },
+    {
+      name: "v2 tag regex changes",
+      apply: (value) => mutateFirst(value, "              consumer_tag_pattern='^consumer-v2-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'", "              consumer_tag_pattern='^consumer-v1-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'"),
+    },
+    {
+      name: "an extra accepted version arm is inserted",
+      apply: (value) => mutateFirst(value, "            *)\n", "            v3)\n              payload_name=consumer-v3.json\n              ;;\n            *)\n"),
+    },
+    {
+      name: "the verify case runs after GitHub access",
+      apply: (value) => {
+        const caseStart = value.indexOf('          case "$contract_version" in');
+        const caseEnd = value.indexOf("          esac", caseStart) + "          esac".length;
+        assert.ok(caseStart >= 0 && caseEnd > caseStart);
+        const caseBlock = value.slice(caseStart, caseEnd);
+        const ghLine = '          gh api "/repos/$GITHUB_REPOSITORY/releases/tags/$SOURCE_RELEASE_TAG" > "$source_root/release.json"';
+        return mutateFirst(value, `${caseBlock}\n\n${ghLine}`, `${ghLine}\n\n${caseBlock}`);
+      },
+    },
+    {
+      name: "the default arm no longer exits",
+      apply: (value) => mutateFirst(value, "              exit 4\n              ;;", "              ;;"),
+    },
+    {
+      name: "the publish case payload assignment changes",
+      apply: (value) => mutateNth(value, '              payload_name="consumer-v1.json"', '              payload_name="consumer-v2.json"', 1),
+    },
+    {
+      name: "the publish case tag regex changes",
+      apply: (value) => mutateNth(value, "              consumer_tag_pattern='^consumer-v2-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'", "              consumer_tag_pattern='^consumer-v1-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'", 1),
+    },
+    {
+      name: "the publish case accepts an extra version arm",
+      apply: (value) => mutateNth(value, "            *)\n", "            v3)\n              payload_name=consumer-v3.json\n              ;;\n            *)\n", 1),
+    },
+    {
+      name: "the publish case runs after GitHub access",
+      apply: (value) => mutateNth(value, '          case "$contract_version" in', '          gh api "/mutation-before-version-validation"\n          case "$contract_version" in', 1),
+    },
+    {
+      name: "the publish default arm no longer exits",
+      apply: (value) => mutateNth(value, "              exit 4\n              ;;", "              ;;", 1),
+    },
+    {
+      name: "a second PATCH command is added",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "a second PATCH command uses equals long syntax",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api --method=PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "a second PATCH command uses short syntax",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api -X PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "a second PATCH command uses equals short syntax",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api -X=PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "a second PATCH command uses compact short syntax",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api -XPATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "an unknown DELETE release write is added",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api --method DELETE "/repos/$GITHUB_REPOSITORY/releases/$candidate_id"'),
+    },
+    {
+      name: "an implicit POST release write is added",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" -F name=mutated'),
+    },
+    {
+      name: "an input-backed POST release write is added",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" --input mutation.json'),
+    },
+    {
+      name: "an equals input-backed POST release write is added",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false > "$work_root/after-promotion.json"\n            gh api "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" --input=mutation.json'),
+    },
+    {
+      name: "the PATCH mutates a second field",
+      apply: (value) => mutateFirst(value, '              -F prerelease=false > "$work_root/after-promotion.json"', '              -F prerelease=false \\\n              -F name=mutated > "$work_root/after-promotion.json"'),
+    },
+    {
+      name: "the v1 promotion guard is moved outside its release block",
+      apply: (value) => {
+        const withoutGuard = mutateFirst(value, '            test "$contract_version" = "v1"\n', "");
+        return mutateFirst(withoutGuard, '          if [ "$existing_release_id" != "none" ]; then', '          test "$contract_version" = "v1"\n          if [ "$existing_release_id" != "none" ]; then');
+      },
+    },
+    {
+      name: "manual mode no longer adds prerelease",
+      apply: (value) => mutateFirst(value, "            release_flags+=(--prerelease)\n", ""),
+    },
+    {
+      name: "release flags are cleared before creation",
+      apply: (value) => mutateFirst(value, '          gh release create "$consumer_tag" \\\n', '          release_flags=()\n          gh release create "$consumer_tag" \\\n'),
+    },
+    {
+      name: "release creation adds a fourth asset",
+      apply: (value) => mutateFirst(value, '            "$bundle_dir/$payload_name" \\\n            "$bundle_dir/$checksum_name"', '            "$bundle_dir/$payload_name" \\\n            "$bundle_dir/unexpected.json" \\\n            "$bundle_dir/$checksum_name"'),
+    },
+    {
+      name: "release creation stops using the derived payload asset",
+      apply: (value) => mutateFirst(value, '            "$bundle_dir/$payload_name" \\\n            "$bundle_dir/$checksum_name"', '            "$bundle_dir/consumer-v1.json" \\\n            "$bundle_dir/$checksum_name"'),
+    },
+  ];
+
+  for (const mutation of mutations) {
+    await t.test(mutation.name, () => {
+      const mutatedSource = mutation.apply(source);
+      const mutatedWorkflow = record(parse(mutatedSource), mutation.name);
+      assert.throws(() => {
+        assertHardenedConsumerReleasePolicy(mutatedWorkflow);
+      });
+    });
+  }
 });
 
 void test("consumer publication is immutable, bounded to three assets and candidate-first", async () => {

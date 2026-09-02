@@ -189,6 +189,12 @@ void test("projects the exact deterministic ERP-Snack macro profile", () => {
   assert.equal(payload.observations.length, 5 * 3 * 24);
   assert.equal(payload.observations.some((row) => row.series_key.startsWith("hcp.ipp")), false);
   assert.equal(payload.observations.some((row) => row.location_key.includes("casablanca")), false);
+  assert.equal(
+    payload.observations.some(
+      (row) => "context_role" in row || "granularity" in row,
+    ),
+    false,
+  );
   assert.equal(payload.coverage_start, "2022-12-01");
   assert.equal(payload.coverage_end, "2024-11-30");
   assert.equal(payload.generated_at, SNAPSHOT_CREATED_AT);

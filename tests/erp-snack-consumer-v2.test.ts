@@ -1,0 +1,843 @@
+import assert from "node:assert/strict";
+import {
+  mkdir,
+  mkdtemp,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { type TestContext } from "node:test";
+
+import ExcelJS from "exceljs";
+
+import { canonicalJson } from "@data-hub/canonical";
+import {
+  ERP_SNACK_V2_TUPLES,
+  buildErpSnackConsumerV2,
+  projectErpSnackV2Observations,
+} from "@data-hub/adapters";
+import {
+  CanonicalObservationSchema,
+  ConsumerV2PayloadSchema,
+  SCHEMA_VERSION,
+  SnapshotIndexSchema,
+  type CanonicalObservation,
+  type SnapshotIndex,
+  type SourceDefinition,
+} from "@data-hub/contracts";
+import {
+  HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+  HCP_IPC_2017_SOURCE,
+} from "@data-hub/source-registry";
+
+import { runRemoteIngestion } from "../apps/ingest-cli/src/run-ingestion.js";
+import {
+  createCkanFetchFixture,
+  createHcpOfficialIpcFixture,
+} from "./fixture-workbooks.js";
+
+const SNAPSHOT_CREATED_AT = "2026-09-01T12:00:00.000Z";
+const SNAPSHOT_ID =
+  "9d3b77bbfc0cf05cbc0f2e27f24cfb0b348ce0e5d71b09267fbd7ce67657e226";
+const SOURCE_TAG = "data-20260901T120000Z-9d3b77bbfc0c";
+const LEGACY_DATASET_ID = `sha256:${"d".repeat(64)}`;
+const OFFICIAL_DATASET_ID = `sha256:${"e".repeat(64)}`;
+const LEGACY_SOURCE_ID = "hcp-ipc-2017-monthly" as const;
+const OFFICIAL_SOURCE_ID = "hcp-ipc-2017-official-g1-monthly" as const;
+
+const EXPECTED_TUPLES = [
+  ["food_overall", "ma", "hcp.ipc2017.01", OFFICIAL_SOURCE_ID, "fresh_national_context", "division", "country"],
+  ["food_overall", "ma:city:al-hoceima", "hcp.ipc2017.01", LEGACY_SOURCE_ID, "historical_detailed_context", "division", "city"],
+  ["food_overall", "ma:city:tetouan", "hcp.ipc2017.01", LEGACY_SOURCE_ID, "historical_detailed_context", "division", "city"],
+  ["bread_cereals", "ma", "hcp.ipc2017.0111", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "country"],
+  ["bread_cereals", "ma:city:al-hoceima", "hcp.ipc2017.0111", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["bread_cereals", "ma:city:tetouan", "hcp.ipc2017.0111", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["fish_seafood", "ma", "hcp.ipc2017.0113", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "country"],
+  ["fish_seafood", "ma:city:al-hoceima", "hcp.ipc2017.0113", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["fish_seafood", "ma:city:tetouan", "hcp.ipc2017.0113", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["oils_fats", "ma", "hcp.ipc2017.0115", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "country"],
+  ["oils_fats", "ma:city:al-hoceima", "hcp.ipc2017.0115", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["oils_fats", "ma:city:tetouan", "hcp.ipc2017.0115", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["vegetables", "ma", "hcp.ipc2017.0117", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "country"],
+  ["vegetables", "ma:city:al-hoceima", "hcp.ipc2017.0117", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+  ["vegetables", "ma:city:tetouan", "hcp.ipc2017.0117", LEGACY_SOURCE_ID, "historical_detailed_context", "group_of_products", "city"],
+] as const;
+
+type RequiredSourceId = typeof LEGACY_SOURCE_ID | typeof OFFICIAL_SOURCE_ID;
+
+function monthPeriod(
+  sourceId: RequiredSourceId,
+  offset: number,
+): { start: string; end: string } {
+  const firstYear = sourceId === OFFICIAL_SOURCE_ID ? 2024 : 2022;
+  const firstMonthIndex = sourceId === OFFICIAL_SOURCE_ID ? 7 : 10;
+  const absoluteMonth = firstMonthIndex + offset;
+  const year = firstYear + Math.floor(absoluteMonth / 12);
+  const monthIndex = absoluteMonth % 12;
+  const month = String(monthIndex + 1).padStart(2, "0");
+  const lastDay = String(new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate())
+    .padStart(2, "0");
+  return {
+    start: `${String(year)}-${month}-01`,
+    end: `${String(year)}-${month}-${lastDay}`,
+  };
+}
+
+function observation(input: {
+  seriesKey: string;
+  locationKey: string;
+  monthOffset: number;
+  sourceId: RequiredSourceId;
+  qualityStatus?: "accepted" | "accepted_with_warning" | "quarantined";
+  revisionNumber?: number;
+  value?: string;
+}): CanonicalObservation {
+  const period = monthPeriod(input.sourceId, input.monthOffset);
+  const qualityStatus = input.qualityStatus ?? "accepted";
+  const revisionNumber = input.revisionNumber ?? 1;
+  return CanonicalObservationSchema.parse({
+    schema_version: SCHEMA_VERSION,
+    observation_id: `sha256:${input.sourceId}|${input.seriesKey}|${input.locationKey}|${period.start}|${String(revisionNumber)}`,
+    natural_key: `${input.seriesKey}|${input.locationKey}|${period.start.slice(0, 7)}`,
+    series_key: input.seriesKey,
+    source_series_label: `Libellé ${input.seriesKey}`,
+    period_start: period.start,
+    period_end: period.end,
+    frequency: "monthly",
+    value: input.value ?? String(100 + input.monthOffset),
+    unit: "index",
+    currency: null,
+    scaling_factor: "1",
+    geography_type: input.locationKey === "ma" ? "country" : "city",
+    location_key: input.locationKey,
+    source_id: input.sourceId,
+    artifact_sha256:
+      input.sourceId === OFFICIAL_SOURCE_ID ? "b".repeat(64) : "a".repeat(64),
+    source_row: input.monthOffset + 1,
+    source_column: 4,
+    retrieved_at: SNAPSHOT_CREATED_AT,
+    source_published_at: null,
+    quality_status: qualityStatus,
+    warning_codes:
+      qualityStatus === "accepted_with_warning" ? ["source_stale"] : [],
+    revision_number: revisionNumber,
+    supersedes_observation_id:
+      revisionNumber === 1
+        ? null
+        : `sha256:${input.sourceId}|${input.seriesKey}|${input.locationKey}|${period.start}|${String(revisionNumber - 1)}`,
+  });
+}
+
+function completeObservationsBySource(): Map<string, CanonicalObservation[]> {
+  const rows = new Map<string, CanonicalObservation[]>([
+    [LEGACY_SOURCE_ID, []],
+    [OFFICIAL_SOURCE_ID, []],
+  ]);
+  for (const tuple of EXPECTED_TUPLES) {
+    const [, locationKey, seriesKey, sourceId] = tuple;
+    const destination = rows.get(sourceId) ?? assert.fail(`missing ${sourceId}`);
+    for (let monthOffset = 0; monthOffset < 25; monthOffset += 1) {
+      destination.push(observation({
+        seriesKey,
+        locationKey,
+        monthOffset,
+        sourceId,
+        qualityStatus:
+          sourceId === LEGACY_SOURCE_ID && monthOffset === 24
+            ? "accepted_with_warning"
+            : "accepted",
+      }));
+    }
+  }
+
+  rows.get(LEGACY_SOURCE_ID)?.push(
+    observation({
+      seriesKey: "hcp.ipc2017.01",
+      locationKey: "ma",
+      monthOffset: 24,
+      sourceId: LEGACY_SOURCE_ID,
+    }),
+    observation({
+      seriesKey: "hcp.ipc2017.0115",
+      locationKey: "ma:city:casablanca",
+      monthOffset: 24,
+      sourceId: LEGACY_SOURCE_ID,
+    }),
+  );
+  rows.get(OFFICIAL_SOURCE_ID)?.push(
+    observation({
+      seriesKey: "hcp.ipc2017.0111",
+      locationKey: "ma",
+      monthOffset: 24,
+      sourceId: OFFICIAL_SOURCE_ID,
+    }),
+  );
+  return rows;
+}
+
+function snapshot(overrides: Partial<SnapshotIndex> = {}): SnapshotIndex {
+  return SnapshotIndexSchema.parse({
+    schema_version: SCHEMA_VERSION,
+    snapshot_id: SNAPSHOT_ID,
+    created_at: SNAPSHOT_CREATED_AT,
+    code_sha: "c".repeat(40),
+    previous_snapshot_tag: null,
+    archive: {
+      name: `data-hub-${"f".repeat(64)}.tar.gz`,
+      byte_length: 1,
+      sha256: "f".repeat(64),
+    },
+    manifest_sha256: "9".repeat(64),
+    sources: [
+      {
+        source_id: LEGACY_SOURCE_ID,
+        run_id: `run:${LEGACY_SOURCE_ID}`,
+        state: "published",
+        artifact_sha256: "a".repeat(64),
+        dataset_id: LEGACY_DATASET_ID,
+        health_status: "stale",
+        warning_codes: ["source_stale"],
+        failure_code: null,
+      },
+      {
+        source_id: OFFICIAL_SOURCE_ID,
+        run_id: `run:${OFFICIAL_SOURCE_ID}`,
+        state: "published",
+        artifact_sha256: "b".repeat(64),
+        dataset_id: OFFICIAL_DATASET_ID,
+        health_status: "healthy",
+        warning_codes: [],
+        failure_code: null,
+      },
+    ],
+    dataset_ids: [LEGACY_DATASET_ID, OFFICIAL_DATASET_ID],
+    contains_confidential_data: false,
+    ...overrides,
+  });
+}
+
+function sources(): SourceDefinition[] {
+  return [HCP_IPC_2017_SOURCE, HCP_IPC_2017_OFFICIAL_G1_SOURCE];
+}
+
+void test("defines the literal fifteen-cell matrix with one official national food tuple", () => {
+  assert.deepEqual(
+    ERP_SNACK_V2_TUPLES.map((tuple) => [
+      tuple.category,
+      tuple.locationKey,
+      tuple.seriesKey,
+      tuple.sourceId,
+      tuple.contextRole,
+      tuple.granularity,
+      tuple.geographyType,
+    ]),
+    EXPECTED_TUPLES,
+  );
+  assert.equal(
+    new Set(ERP_SNACK_V2_TUPLES.map((tuple) => `${tuple.category}|${tuple.locationKey}`)).size,
+    15,
+  );
+  assert.deepEqual(
+    ERP_SNACK_V2_TUPLES
+      .filter((tuple) => tuple.sourceId === OFFICIAL_SOURCE_ID)
+      .map((tuple) => `${tuple.category}|${tuple.locationKey}`),
+    ["food_overall|ma"],
+  );
+  assert.equal(
+    ERP_SNACK_V2_TUPLES.filter((tuple) => tuple.sourceId === LEGACY_SOURCE_ID).length,
+    14,
+  );
+});
+
+void test("adapter exposes the contract-owned v2 tuple table without a drifting copy", async () => {
+  const contracts = await import("@data-hub/contracts") as unknown as {
+    CONSUMER_V2_TUPLES?: unknown;
+  };
+
+  assert.equal(ERP_SNACK_V2_TUPLES, contracts.CONSUMER_V2_TUPLES);
+});
+
+void test("projects the latest 24 observations for every exact tuple", () => {
+  const payload = projectErpSnackV2Observations({
+    observationsBySource: completeObservationsBySource(),
+    snapshot: snapshot(),
+    sources: sources(),
+  });
+
+  assert.equal(payload.source_snapshot_tag, SOURCE_TAG);
+  assert.deepEqual(payload.sources.map((source) => source.source_id), [
+    LEGACY_SOURCE_ID,
+    OFFICIAL_SOURCE_ID,
+  ]);
+  assert.equal(payload.observations.length, 360);
+  for (const tuple of EXPECTED_TUPLES) {
+    const [category, locationKey, seriesKey, sourceId, contextRole, granularity] = tuple;
+    const selected = payload.observations.filter(
+      (row) => row.category === category && row.location_key === locationKey,
+    );
+    assert.equal(selected.length, 24, `${category}|${locationKey}`);
+    assert.equal(selected[0]?.period_start, sourceId === OFFICIAL_SOURCE_ID ? "2024-09-01" : "2022-12-01");
+    assert.equal(selected.at(-1)?.period_end, sourceId === OFFICIAL_SOURCE_ID ? "2026-08-31" : "2024-11-30");
+    assert.equal(selected.every((row) => row.series_key === seriesKey), true);
+    assert.equal(selected.every((row) => row.source_id === sourceId), true);
+    assert.equal(selected.every((row) => row.context_role === contextRole), true);
+    assert.equal(selected.every((row) => row.granularity === granularity), true);
+  }
+  assert.equal(payload.generated_at, SNAPSHOT_CREATED_AT);
+  assert.equal(payload.coverage_start, "2022-12-01");
+  assert.equal(payload.coverage_end, "2026-08-31");
+  assert.equal(payload.sources[0]?.licence_id, "ODbL-1.0");
+  assert.equal(payload.sources[0].health_status, "stale");
+  assert.equal(payload.sources[1]?.licence_id, "CC-BY-4.0");
+  assert.equal(payload.sources[1].health_status, "healthy");
+  ConsumerV2PayloadSchema.parse(payload);
+});
+
+void test("is byte deterministic across source, row and wall-clock order", () => {
+  const rows = completeObservationsBySource();
+  const firstClock = "2031-01-01T00:00:00.000Z";
+  const first = withAmbientClock(firstClock, () => {
+    assert.equal(new Date().toISOString(), firstClock);
+    return projectErpSnackV2Observations({
+      observationsBySource: rows,
+      snapshot: snapshot(),
+      sources: sources(),
+    });
+  });
+  const secondClock = "2042-12-31T23:59:59.999Z";
+  const reversed = withAmbientClock(secondClock, () => {
+    assert.equal(new Date().toISOString(), secondClock);
+    return projectErpSnackV2Observations({
+      observationsBySource: new Map(
+        [...rows.entries()].reverse().map(([sourceId, observations]) => [
+          sourceId,
+          [...observations].reverse(),
+        ]),
+      ),
+      snapshot: snapshot(),
+      sources: [...sources()].reverse(),
+    });
+  });
+
+  assert.equal(canonicalJson(first), canonicalJson(reversed));
+});
+
+void test("fails closed with stable codes for either missing dataset or one missing tuple", () => {
+  for (const sourceId of [LEGACY_SOURCE_ID, OFFICIAL_SOURCE_ID]) {
+    const rows = completeObservationsBySource();
+    rows.delete(sourceId);
+    assert.throws(
+      () => projectErpSnackV2Observations({
+        observationsBySource: rows,
+        snapshot: snapshot(),
+        sources: sources(),
+      }),
+      new RegExp(`consumer_v2_dataset_missing:${sourceId}`),
+    );
+  }
+
+  const rows = completeObservationsBySource();
+  const missing = EXPECTED_TUPLES.at(-1) ?? assert.fail("missing tuple fixture");
+  const [, locationKey, seriesKey, sourceId] = missing;
+  rows.set(
+    sourceId,
+    (rows.get(sourceId) ?? []).filter(
+      (row) => row.series_key !== seriesKey || row.location_key !== locationKey,
+    ),
+  );
+  assert.throws(
+    () => projectErpSnackV2Observations({
+      observationsBySource: rows,
+      snapshot: snapshot(),
+      sources: sources(),
+    }),
+    /consumer_v2_profile_tuple_missing:vegetables\|ma:city:tetouan/,
+  );
+});
+
+void test("rejects a tuple with only 23 distinct monthly periods", () => {
+  const rows = completeObservationsBySource();
+  const sourceRows = rows.get(LEGACY_SOURCE_ID) ?? assert.fail("missing legacy rows");
+  rows.set(
+    LEGACY_SOURCE_ID,
+    sourceRows.filter(
+      (row) =>
+        row.series_key !== "hcp.ipc2017.0117" ||
+        row.location_key !== "ma:city:tetouan" ||
+        row.period_start >= "2023-01-01",
+    ),
+  );
+
+  assert.throws(
+    () => projectErpSnackV2Observations({
+      observationsBySource: rows,
+      snapshot: snapshot(),
+      sources: sources(),
+    }),
+    /consumer_v2_profile_history_incomplete:vegetables\|ma:city:tetouan:23/,
+  );
+});
+
+void test("selects only the current revision for each of 24 distinct months", () => {
+  const rows = completeObservationsBySource();
+  rows.get(OFFICIAL_SOURCE_ID)?.push(
+    observation({
+      seriesKey: "hcp.ipc2017.01",
+      locationKey: "ma",
+      monthOffset: 24,
+      sourceId: OFFICIAL_SOURCE_ID,
+      revisionNumber: 2,
+      value: "999",
+    }),
+  );
+
+  const payload = projectErpSnackV2Observations({
+    observationsBySource: rows,
+    snapshot: snapshot(),
+    sources: sources(),
+  });
+  const officialFood = payload.observations.filter(
+    (row) => row.category === "food_overall" && row.location_key === "ma",
+  );
+
+  assert.equal(officialFood.length, 24);
+  assert.equal(new Set(officialFood.map((row) => row.period_start)).size, 24);
+  assert.equal(officialFood[0]?.period_start, "2024-09-01");
+  assert.equal(officialFood.at(-1)?.revision_number, 2);
+  assert.equal(officialFood.at(-1)?.value, "999");
+  assert.equal(
+    officialFood.some(
+      (row) => row.period_start === "2026-08-01" && row.revision_number === 1,
+    ),
+    false,
+  );
+  assert.equal(payload.observations.length, 360);
+});
+
+void test("rejects unexpected source inputs and snapshot dataset mismatches", () => {
+  const unexpectedRows = completeObservationsBySource();
+  unexpectedRows.set("hcp-ipp-2018-monthly", []);
+  assert.throws(
+    () => projectErpSnackV2Observations({
+      observationsBySource: unexpectedRows,
+      snapshot: snapshot(),
+      sources: sources(),
+    }),
+    /consumer_v2_dataset_unexpected:hcp-ipp-2018-monthly/,
+  );
+  assert.throws(
+    () => projectErpSnackV2Observations({
+      observationsBySource: completeObservationsBySource(),
+      snapshot: snapshot(),
+      sources: [HCP_IPC_2017_SOURCE],
+    }),
+    /consumer_v2_source_missing:hcp-ipc-2017-official-g1-monthly/,
+  );
+
+  const missingOfficialDataset = snapshot({
+    sources: snapshot().sources.map((source) =>
+      source.source_id === OFFICIAL_SOURCE_ID
+        ? { ...source, dataset_id: null }
+        : source,
+    ),
+  });
+  assert.throws(
+    () => projectErpSnackV2Observations({
+      observationsBySource: completeObservationsBySource(),
+      snapshot: missingOfficialDataset,
+      sources: sources(),
+    }),
+    /consumer_v2_snapshot_dataset_missing:hcp-ipc-2017-official-g1-monthly/,
+  );
+});
+
+void test("rejects disabled, non-official and non-redistributable source definitions", () => {
+  const invalidCases: Array<{
+    mutate: (source: SourceDefinition) => void;
+    error: RegExp;
+  }> = [
+    {
+      mutate: (source) => { source.enabled = false; },
+      error: /consumer_v2_source_not_qualified:hcp-ipc-2017-monthly/,
+    },
+    {
+      mutate: (source) => { source.authority_level = "licensed"; },
+      error: /consumer_v2_source_not_qualified:hcp-ipc-2017-monthly/,
+    },
+    {
+      mutate: (source) => { source.access_mode = "disabled"; },
+      error: /consumer_v2_source_not_qualified:hcp-ipc-2017-monthly/,
+    },
+    {
+      mutate: (source) => { source.licence.permits_redistribution = false; },
+      error: /consumer_v2_redistribution_not_permitted:hcp-ipc-2017-monthly/,
+    },
+  ];
+
+  for (const invalidCase of invalidCases) {
+    const candidateSources = structuredClone(sources());
+    const legacy = candidateSources[0] ?? assert.fail("missing legacy source");
+    invalidCase.mutate(legacy);
+    assert.throws(
+      () => projectErpSnackV2Observations({
+        observationsBySource: completeObservationsBySource(),
+        snapshot: snapshot(),
+        sources: candidateSources,
+      }),
+      invalidCase.error,
+    );
+  }
+});
+
+const REGISTERED_SOURCE_MUTATIONS: Array<{
+  field: string;
+  mutate: (source: SourceDefinition) => void;
+}> = [
+  {
+    field: "publisher_name",
+    mutate: (source) => { source.publisher_name = "Éditeur non qualifié"; },
+  },
+  {
+    field: "official_base_url",
+    mutate: (source) => {
+      source.official_base_url = "https://example.invalid/official";
+    },
+  },
+  {
+    field: "cadence",
+    mutate: (source) => { source.cadence.warning_age_days = 61; },
+  },
+  {
+    field: "connector",
+    mutate: (source) => {
+      if (source.connector.kind !== "google-sheets-xlsx") {
+        assert.fail("expected official Google Sheets connector");
+      }
+      source.connector.sheet_gid = "1240277578";
+    },
+  },
+  {
+    field: "parser",
+    mutate: (source) => {
+      if (source.parser.kind !== "hcp-official-indicator-workbook") {
+        assert.fail("expected official indicator parser");
+      }
+      source.parser.profile = "ipc-2017-official-g2";
+    },
+  },
+  {
+    field: "geography_scope",
+    mutate: (source) => { source.geography_scope = ["country", "city"]; },
+  },
+  {
+    field: "series_scope",
+    mutate: (source) => {
+      source.series_scope = ["producer_price_index"];
+    },
+  },
+  {
+    field: "owner",
+    mutate: (source) => { source.owner = "unqualified-owner"; },
+  },
+  {
+    field: "recovery_procedure",
+    mutate: (source) => {
+      source.recovery_procedure = "docs/unqualified-recovery.md";
+    },
+  },
+];
+
+for (const invalidCase of REGISTERED_SOURCE_MUTATIONS) {
+  void test(`rejects registered source ${invalidCase.field} mutation`, () => {
+    const candidateSources = structuredClone(sources());
+    const official = candidateSources[1] ?? assert.fail("missing official source");
+    invalidCase.mutate(official);
+    assert.throws(
+      () => projectErpSnackV2Observations({
+        observationsBySource: completeObservationsBySource(),
+        snapshot: snapshot(),
+        sources: candidateSources,
+      }),
+      /consumer_v2_source_not_qualified:hcp-ipc-2017-official-g1-monthly/,
+      invalidCase.field,
+    );
+  });
+}
+
+void test("rejects unexpected licence identity and evidence", () => {
+  for (const mutate of [
+    (source: SourceDefinition) => { source.licence.id = "INVALID"; },
+    (source: SourceDefinition) => {
+      source.licence.evidence_url = "https://example.invalid/untrusted";
+    },
+    (source: SourceDefinition) => {
+      source.licence.permits_internal_derived_use = false;
+    },
+  ]) {
+    const candidateSources = structuredClone(sources());
+    const official = candidateSources[1] ?? assert.fail("missing official source");
+    mutate(official);
+    assert.throws(
+      () => projectErpSnackV2Observations({
+        observationsBySource: completeObservationsBySource(),
+        snapshot: snapshot(),
+        sources: candidateSources,
+      }),
+      /consumer_v2_licence_mismatch:hcp-ipc-2017-official-g1-monthly/,
+    );
+  }
+});
+
+void test("rejects quarantined snapshot state and blocking source health", () => {
+  const invalidCases = [
+    {
+      state: "quarantined" as const,
+      health_status: "quarantined" as const,
+      error: /consumer_v2_snapshot_source_state_invalid:hcp-ipc-2017-official-g1-monthly:quarantined/,
+    },
+    {
+      state: "published" as const,
+      health_status: "licence_blocked" as const,
+      error: /consumer_v2_snapshot_source_health_invalid:hcp-ipc-2017-official-g1-monthly:licence_blocked/,
+    },
+  ];
+
+  for (const invalidCase of invalidCases) {
+    const invalidSnapshot = snapshot({
+      sources: snapshot().sources.map((source) =>
+        source.source_id === OFFICIAL_SOURCE_ID
+          ? {
+              ...source,
+              state: invalidCase.state,
+              health_status: invalidCase.health_status,
+            }
+          : source,
+      ),
+    });
+    assert.throws(
+      () => projectErpSnackV2Observations({
+        observationsBySource: completeObservationsBySource(),
+        snapshot: invalidSnapshot,
+        sources: sources(),
+      }),
+      invalidCase.error,
+    );
+  }
+});
+
+function withAmbientClock<T>(isoTimestamp: string, callback: () => T): T {
+  const NativeDate = globalThis.Date;
+  class FixedDate extends NativeDate {
+    constructor(value?: string | number | Date) {
+      if (value === undefined) super(isoTimestamp);
+      else if (value instanceof NativeDate) super(value.getTime());
+      else super(value);
+    }
+
+    static override now(): number {
+      return NativeDate.parse(isoTimestamp);
+    }
+  }
+  globalThis.Date = FixedDate as DateConstructor;
+  try {
+    return callback();
+  } finally {
+    globalThis.Date = NativeDate;
+  }
+}
+
+async function malformedDataDir(t: TestContext): Promise<string> {
+  const dataDir = await mkdtemp(join(tmpdir(), "erp-snack-consumer-v2-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  await mkdir(join(dataDir, "published"), { recursive: true });
+  await writeFile(join(dataDir, "published", "unexpected.txt"), "unverified\n");
+  return dataDir;
+}
+
+const LEGACY_SERIES_LABELS = [
+  "(01) PRODUITS ALIMENTAIRES ET BOISSONS NON ALCOOLISEES",
+  "(0111) PAIN ET CEREALES",
+  "(0113) POISSON ET FRUITS DE MER",
+  "(0115) HUILES ET GRAISSES",
+  "(0117) LEGUMES",
+] as const;
+const LEGACY_LOCATION_LABELS = ["National", "Al Hoceima", "Tétouan"] as const;
+const MONTH_TOKENS = [
+  "Janv",
+  "Févr",
+  "Mars",
+  "Avr",
+  "Mai",
+  "Juin",
+  "Juill",
+  "Août",
+  "Sept",
+  "Oct",
+  "Nov",
+  "Déc",
+] as const;
+
+function legacyMonthHeader(offset: number): string {
+  const period = monthPeriod(LEGACY_SOURCE_ID, offset).start;
+  const monthIndex = Number(period.slice(5, 7)) - 1;
+  const token = MONTH_TOKENS[monthIndex] ?? assert.fail("missing month token");
+  return `${token}-${period.slice(0, 4)}`;
+}
+
+async function createLegacyProfileWorkbook(): Promise<Uint8Array> {
+  const workbook = new ExcelJS.Workbook();
+  const data = workbook.addWorksheet("Data");
+  data.getCell("A1").value = "Indice des prix à la consommation";
+  data.addRow([]);
+  data.addRow([]);
+  data.addRow([
+    "Villes",
+    "Divisions et groupes de produits",
+    "2017",
+    ...Array.from({ length: 25 }, (_, offset) => legacyMonthHeader(offset)),
+  ]);
+  for (const location of LEGACY_LOCATION_LABELS) {
+    for (const series of LEGACY_SERIES_LABELS) {
+      data.addRow([
+        location,
+        series,
+        100,
+        ...Array.from({ length: 25 }, (_, offset) => 100 + offset),
+      ]);
+    }
+  }
+  const metadata = workbook.addWorksheet("Metadata");
+  metadata.addRows([
+    ["L'indicateur", "Indice des prix à la consommation"],
+    ["Définition", "Indice base 100"],
+    ["Periodicité", "Mensuelle"],
+    ["Unité", "Indice"],
+    ["Source", "Haut-Commissariat au Plan"],
+  ]);
+  return new Uint8Array(await workbook.xlsx.writeBuffer());
+}
+
+function createOfficialFetchFixture(workbookBytes: Uint8Array): typeof fetch {
+  return () => Promise.resolve(new Response(workbookBytes, {
+    status: 200,
+    headers: {
+      "content-length": String(workbookBytes.byteLength),
+      "content-type":
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    },
+  }));
+}
+
+async function validDataHubFixture(t: TestContext): Promise<{
+  dataDir: string;
+  snapshot: SnapshotIndex;
+}> {
+  const dataDir = await mkdtemp(join(tmpdir(), "erp-snack-consumer-v2-valid-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const legacyRun = await runRemoteIngestion({
+    sourceId: LEGACY_SOURCE_ID,
+    dataDir,
+    fetchImpl: createCkanFetchFixture(await createLegacyProfileWorkbook()),
+    now: SNAPSHOT_CREATED_AT,
+  });
+  const officialPeriods = Array.from(
+    { length: 25 },
+    (_, offset) => monthPeriod(OFFICIAL_SOURCE_ID, offset).start
+      .slice(0, 7)
+      .replace("-", "/"),
+  );
+  const officialRun = await runRemoteIngestion({
+    sourceId: OFFICIAL_SOURCE_ID,
+    dataDir,
+    fetchImpl: createOfficialFetchFixture(
+      await createHcpOfficialIpcFixture("ipc-2017-official-g1", {
+        periods: officialPeriods,
+      }),
+    ),
+    now: SNAPSHOT_CREATED_AT,
+  });
+  assert.equal(legacyRun.state, "published");
+  assert.equal(officialRun.state, "published");
+  const legacyDatasetId = legacyRun.dataset_id ?? assert.fail("missing legacy dataset");
+  const officialDatasetId = officialRun.dataset_id ?? assert.fail("missing official dataset");
+
+  return {
+    dataDir,
+    snapshot: snapshot({
+      sources: [
+        {
+          source_id: LEGACY_SOURCE_ID,
+          run_id: legacyRun.run_id,
+          state: legacyRun.state,
+          artifact_sha256: legacyRun.artifact_sha256,
+          dataset_id: legacyDatasetId,
+          health_status: "stale",
+          warning_codes: ["source_stale"],
+          failure_code: legacyRun.failure_code,
+        },
+        {
+          source_id: OFFICIAL_SOURCE_ID,
+          run_id: officialRun.run_id,
+          state: officialRun.state,
+          artifact_sha256: officialRun.artifact_sha256,
+          dataset_id: officialDatasetId,
+          health_status: "healthy",
+          warning_codes: [],
+          failure_code: officialRun.failure_code,
+        },
+      ],
+      dataset_ids: [legacyDatasetId, officialDatasetId].sort(),
+    }),
+  };
+}
+
+void test("validates the data hub state before loading snapshot datasets", async (t) => {
+  const dataDir = await malformedDataDir(t);
+  await assert.rejects(
+    () => buildErpSnackConsumerV2({
+      dataDir,
+      snapshot: snapshot(),
+      sourceTag: SOURCE_TAG,
+    }),
+    /unexpected_data_hub_file:published\/unexpected.txt/,
+  );
+});
+
+void test("loads and parses both verified snapshot datasets before projection", async (t) => {
+  const fixture = await validDataHubFixture(t);
+  const payload = await buildErpSnackConsumerV2({
+    dataDir: fixture.dataDir,
+    snapshot: fixture.snapshot,
+    sourceTag: SOURCE_TAG,
+  });
+
+  assert.equal(payload.observations.length, 360);
+  assert.deepEqual(payload.sources.map((source) => source.source_id), [
+    LEGACY_SOURCE_ID,
+    OFFICIAL_SOURCE_ID,
+  ]);
+  assert.equal(
+    new Set(payload.observations.map((row) => row.artifact_sha256)).size,
+    2,
+  );
+
+  const legacyDatasetId = fixture.snapshot.sources[0]?.dataset_id ??
+    assert.fail("missing legacy dataset");
+  const mismatchedSnapshot = snapshot({
+    sources: fixture.snapshot.sources.map((source) =>
+      source.source_id === OFFICIAL_SOURCE_ID
+        ? { ...source, dataset_id: legacyDatasetId }
+        : source,
+    ),
+    dataset_ids: fixture.snapshot.dataset_ids,
+  });
+  await assert.rejects(
+    () => buildErpSnackConsumerV2({
+      dataDir: fixture.dataDir,
+      snapshot: mismatchedSnapshot,
+      sourceTag: SOURCE_TAG,
+    }),
+    /consumer_v2_verified_dataset_missing:hcp-ipc-2017-official-g1-monthly/,
+  );
+});

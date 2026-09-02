@@ -13,20 +13,42 @@ import { basename, dirname, join, resolve } from "node:path";
 
 import { canonicalJson, sha256Hex } from "@data-hub/canonical";
 import {
+  CONSUMER_CONTRACT,
+  CONSUMER_V2_CONTRACT,
   ConsumerIndexSchema,
   ConsumerPayloadSchema,
+  ConsumerV2IndexSchema,
+  ConsumerV2PayloadSchema,
   type ConsumerIndex,
   type ConsumerPayload,
+  type ConsumerV2Index,
+  type ConsumerV2Payload,
 } from "@data-hub/contracts";
 
 const INDEX_NAME = "consumer-index.json";
-const PAYLOAD_NAME = "consumer-v1.json";
-const CHECKSUM_NAME = "consumer-v1.json.sha256";
-const BUNDLE_NAMES = [INDEX_NAME, PAYLOAD_NAME, CHECKSUM_NAME].sort();
+const BUNDLE_SPEC = {
+  [CONSUMER_CONTRACT]: {
+    payloadName: "consumer-v1.json",
+    checksumName: "consumer-v1.json.sha256",
+    indexSchema: ConsumerIndexSchema,
+    payloadSchema: ConsumerPayloadSchema,
+  },
+  [CONSUMER_V2_CONTRACT]: {
+    payloadName: "consumer-v2.json",
+    checksumName: "consumer-v2.json.sha256",
+    indexSchema: ConsumerV2IndexSchema,
+    payloadSchema: ConsumerV2PayloadSchema,
+  },
+} as const;
+
+type SupportedConsumerContract = keyof typeof BUNDLE_SPEC;
+type BundleSpec = (typeof BUNDLE_SPEC)[SupportedConsumerContract];
+export type SupportedConsumerPayload = ConsumerPayload | ConsumerV2Payload;
+export type SupportedConsumerIndex = ConsumerIndex | ConsumerV2Index;
 
 export interface WriteConsumerBundleInput {
   outputDir: string;
-  payload: ConsumerPayload;
+  payload: SupportedConsumerPayload;
   codeSha: string;
 }
 
@@ -37,7 +59,7 @@ export interface VerifyConsumerBundleInput {
 }
 
 export interface CreatedConsumerBundle {
-  index: ConsumerIndex;
+  index: SupportedConsumerIndex;
   indexPath: string;
   payloadPath: string;
   checksumPath: string;
@@ -66,14 +88,17 @@ function sameStrings(left: string[], right: string[]): boolean {
   );
 }
 
-async function assertBundleLayout(
+function bundleSpecForContract(contract: unknown): BundleSpec {
+  if (contract !== CONSUMER_CONTRACT && contract !== CONSUMER_V2_CONTRACT) {
+    throw new Error("unsupported_consumer_contract");
+  }
+  return BUNDLE_SPEC[contract];
+}
+
+async function assertBundleRoot(
   input: VerifyConsumerBundleInput,
-): Promise<void> {
-  if (
-    basename(input.indexPath) !== INDEX_NAME ||
-    basename(input.payloadPath) !== PAYLOAD_NAME ||
-    basename(input.checksumPath) !== CHECKSUM_NAME
-  ) {
+): Promise<string> {
+  if (basename(input.indexPath) !== INDEX_NAME) {
     throw new Error("consumer_bundle_path_mismatch");
   }
 
@@ -93,8 +118,27 @@ async function assertBundleLayout(
   if (directoryStats.isSymbolicLink() || !directoryStats.isDirectory()) {
     throw new Error("consumer_bundle_directory_not_regular");
   }
+  const indexStats = await lstat(input.indexPath);
+  if (indexStats.isSymbolicLink() || !indexStats.isFile()) {
+    throw new Error("consumer_bundle_asset_not_regular");
+  }
+  return bundleDir;
+}
+
+async function assertBundleLayout(
+  input: VerifyConsumerBundleInput,
+  bundleDir: string,
+  spec: BundleSpec,
+): Promise<void> {
+  if (
+    basename(input.payloadPath) !== spec.payloadName ||
+    basename(input.checksumPath) !== spec.checksumName
+  ) {
+    throw new Error("consumer_bundle_path_mismatch");
+  }
   const entries = (await readdir(bundleDir)).sort();
-  if (!sameStrings(entries, BUNDLE_NAMES)) {
+  const expectedNames = [INDEX_NAME, spec.payloadName, spec.checksumName].sort();
+  if (!sameStrings(entries, expectedNames)) {
     throw new Error("unexpected_consumer_bundle_files");
   }
 
@@ -110,19 +154,37 @@ async function assertBundleLayout(
   }
 }
 
-function parseIndex(bytes: Buffer): ConsumerIndex {
+function parseIndex(bytes: Buffer): {
+  index: SupportedConsumerIndex;
+  spec: BundleSpec;
+} {
   try {
-    return ConsumerIndexSchema.parse(
-      JSON.parse(bytes.toString("utf8")) as unknown,
+    const candidate = JSON.parse(bytes.toString("utf8")) as unknown;
+    if (
+      candidate === null ||
+      typeof candidate !== "object" ||
+      Array.isArray(candidate)
+    ) {
+      throw new Error("unsupported_consumer_contract");
+    }
+    const spec = bundleSpecForContract(
+      (candidate as { consumer_contract?: unknown }).consumer_contract,
     );
+    return {
+      index: spec.indexSchema.parse(candidate),
+      spec,
+    };
   } catch (error) {
     throw new Error("invalid_consumer_index", { cause: error });
   }
 }
 
-function parsePayload(bytes: Buffer): ConsumerPayload {
+function parsePayload(
+  bytes: Buffer,
+  spec: BundleSpec,
+): SupportedConsumerPayload {
   try {
-    return ConsumerPayloadSchema.parse(
+    return spec.payloadSchema.parse(
       JSON.parse(bytes.toString("utf8")) as unknown,
     );
   } catch (error) {
@@ -131,8 +193,8 @@ function parsePayload(bytes: Buffer): ConsumerPayload {
 }
 
 function assertCrossFileConsistency(
-  index: ConsumerIndex,
-  payload: ConsumerPayload,
+  index: SupportedConsumerIndex,
+  payload: SupportedConsumerPayload,
 ): void {
   if (
     index.source_snapshot_tag !== payload.source_snapshot_tag ||
@@ -163,14 +225,15 @@ function assertCrossFileConsistency(
 
 export async function verifyConsumerBundle(
   input: VerifyConsumerBundleInput,
-): Promise<ConsumerIndex> {
-  await assertBundleLayout(input);
-  const [indexBytes, payloadBytes, checksumBytes] = await Promise.all([
-    readFile(input.indexPath),
+): Promise<SupportedConsumerIndex> {
+  const bundleDir = await assertBundleRoot(input);
+  const indexBytes = await readFile(input.indexPath);
+  const { index, spec } = parseIndex(indexBytes);
+  await assertBundleLayout(input, bundleDir, spec);
+  const [payloadBytes, checksumBytes] = await Promise.all([
     readFile(input.payloadPath),
     readFile(input.checksumPath),
   ]);
-  const index = parseIndex(indexBytes);
 
   if (!indexBytes.equals(Buffer.from(`${canonicalJson(index)}\n`))) {
     throw new Error("non_canonical_consumer_index");
@@ -184,11 +247,11 @@ export async function verifyConsumerBundle(
   }
   if (
     checksumBytes.toString("utf8") !==
-    `${payloadSha256}  ${PAYLOAD_NAME}\n`
+    `${payloadSha256}  ${spec.payloadName}\n`
   ) {
     throw new Error("consumer_checksum_sidecar_mismatch");
   }
-  const payload = parsePayload(payloadBytes);
+  const payload = parsePayload(payloadBytes, spec);
   if (!payloadBytes.equals(Buffer.from(`${canonicalJson(payload)}\n`))) {
     throw new Error("non_canonical_consumer_payload");
   }
@@ -199,10 +262,11 @@ export async function verifyConsumerBundle(
 export async function writeConsumerBundle(
   input: WriteConsumerBundleInput,
 ): Promise<CreatedConsumerBundle> {
-  const payload = ConsumerPayloadSchema.parse(input.payload);
+  const spec = bundleSpecForContract(input.payload.consumer_contract);
+  const payload = spec.payloadSchema.parse(input.payload);
   const payloadBytes = Buffer.from(`${canonicalJson(payload)}\n`);
   const payloadSha256 = sha256Hex(payloadBytes);
-  const index = ConsumerIndexSchema.parse({
+  const index = spec.indexSchema.parse({
     schema_version: payload.schema_version,
     consumer_contract: payload.consumer_contract,
     source_snapshot_tag: payload.source_snapshot_tag,
@@ -219,7 +283,7 @@ export async function writeConsumerBundle(
     coverage_end: payload.coverage_end,
     source_ids: payload.sources.map((source) => source.source_id),
     payload: {
-      name: PAYLOAD_NAME,
+      name: spec.payloadName,
       byte_length: payloadBytes.byteLength,
       sha256: payloadSha256,
     },
@@ -232,8 +296,8 @@ export async function writeConsumerBundle(
   );
   const stagedPaths = {
     indexPath: join(stagingDirectory, INDEX_NAME),
-    payloadPath: join(stagingDirectory, PAYLOAD_NAME),
-    checksumPath: join(stagingDirectory, CHECKSUM_NAME),
+    payloadPath: join(stagingDirectory, spec.payloadName),
+    checksumPath: join(stagingDirectory, spec.checksumName),
   };
   let committed = false;
   try {
@@ -244,7 +308,7 @@ export async function writeConsumerBundle(
       writeFile(stagedPaths.payloadPath, payloadBytes, { flag: "wx" }),
       writeFile(
         stagedPaths.checksumPath,
-        `${payloadSha256}  ${PAYLOAD_NAME}\n`,
+        `${payloadSha256}  ${spec.payloadName}\n`,
         { flag: "wx" },
       ),
     ]);
@@ -264,7 +328,7 @@ export async function writeConsumerBundle(
   return {
     index,
     indexPath: join(input.outputDir, INDEX_NAME),
-    payloadPath: join(input.outputDir, PAYLOAD_NAME),
-    checksumPath: join(input.outputDir, CHECKSUM_NAME),
+    payloadPath: join(input.outputDir, spec.payloadName),
+    checksumPath: join(input.outputDir, spec.checksumName),
   };
 }
