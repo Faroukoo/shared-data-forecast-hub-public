@@ -16,7 +16,7 @@ on:
       contract_version:
         description: Consumer contract version to verify or publish
         type: choice
-        options: [v1, v2]
+        options: [v1, v2, v3]
         default: v1
         required: true
   workflow_run:
@@ -80,6 +80,12 @@ jobs:
               checksum_name="consumer-v2.json.sha256"
               consumer_tag_prefix="consumer-v2"
               consumer_tag_pattern='^consumer-v2-\d{8}T\d{6}Z-[a-f0-9]{12}$'
+              ;;
+            v3)
+              payload_name="consumer-v3.json"
+              checksum_name="consumer-v3.json.sha256"
+              consumer_tag_prefix="consumer-v3"
+              consumer_tag_pattern='^consumer-v3-\d{8}T\d{6}Z-[a-f0-9]{12}$'
               ;;
             *)
               echo "unsupported consumer contract version" >&2
@@ -290,13 +296,19 @@ jobs:
               consumer_tag_prefix="consumer-v2"
               consumer_tag_pattern='^consumer-v2-\d{8}T\d{6}Z-[a-f0-9]{12}$'
               ;;
+            v3)
+              payload_name="consumer-v3.json"
+              checksum_name="consumer-v3.json.sha256"
+              consumer_tag_prefix="consumer-v3"
+              consumer_tag_pattern='^consumer-v3-\d{8}T\d{6}Z-[a-f0-9]{12}$'
+              ;;
             *)
               echo "unsupported consumer contract version" >&2
               exit 4
               ;;
           esac
-          if [ "$contract_version" = "v2" ] && [ "$operation" != "manual" ]; then
-            echo "consumer v2 is candidate-only" >&2
+          if [[ "$contract_version" =~ ^v[23]$ ]] && [ "$operation" != "manual" ]; then
+            echo "consumer v2 and v3 are candidate-only" >&2
             exit 4
           fi
 

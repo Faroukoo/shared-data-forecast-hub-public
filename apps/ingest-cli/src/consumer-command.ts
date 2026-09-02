@@ -3,10 +3,12 @@ import { readFile } from "node:fs/promises";
 import {
   buildErpSnackConsumer,
   buildErpSnackConsumerV2,
+  buildErpSnackConsumerV3,
   verifyConsumerBundle,
   writeConsumerBundle,
   type BuildErpSnackConsumerInput,
   type BuildErpSnackConsumerV2Input,
+  type BuildErpSnackConsumerV3Input,
   type VerifyConsumerBundleInput,
   type WriteConsumerBundleInput,
 } from "@data-hub/adapters";
@@ -14,6 +16,7 @@ import {
   SnapshotIndexSchema,
   type ConsumerPayload,
   type ConsumerV2Payload,
+  type ConsumerV3Payload,
 } from "@data-hub/contracts";
 
 import {
@@ -47,6 +50,9 @@ export interface ConsumerCommandDependencies {
   buildConsumerV2?: (
     input: BuildErpSnackConsumerV2Input,
   ) => Promise<ConsumerV2Payload>;
+  buildConsumerV3?: (
+    input: BuildErpSnackConsumerV3Input,
+  ) => Promise<ConsumerV3Payload>;
   writeBundle?: (
     input: WriteConsumerBundleInput,
   ) => Promise<{ index: ConsumerBundleIdentity }>;
@@ -90,7 +96,11 @@ async function createConsumerBundle(
   const outputDir = requiredOption(values, "--output-dir");
   const codeSha = requiredOption(values, "--code-sha");
   const contractVersion = values.get("--contract-version") ?? "v1";
-  if (contractVersion !== "v1" && contractVersion !== "v2") {
+  if (
+    contractVersion !== "v1" &&
+    contractVersion !== "v2" &&
+    contractVersion !== "v3"
+  ) {
     throw new CliUsageError("invalid_contract_version");
   }
   if (!SOURCE_TAG_PATTERN.test(requestedSourceTag)) {
@@ -107,14 +117,11 @@ async function createConsumerBundle(
     throw new Error("consumer_source_tag_snapshot_mismatch");
   }
   const builderInput = { dataDir, snapshot, sourceTag: requestedSourceTag };
-  const payload =
-    contractVersion === "v2"
-      ? await (
-          dependencies.buildConsumerV2 ?? buildErpSnackConsumerV2
-        )(builderInput)
-      : await (
-          dependencies.buildConsumer ?? buildErpSnackConsumer
-        )(builderInput);
+  const payload = contractVersion === "v2"
+    ? await (dependencies.buildConsumerV2 ?? buildErpSnackConsumerV2)(builderInput)
+    : contractVersion === "v3"
+    ? await (dependencies.buildConsumerV3 ?? buildErpSnackConsumerV3)(builderInput)
+    : await (dependencies.buildConsumer ?? buildErpSnackConsumer)(builderInput);
   if (payload.source_snapshot_tag !== requestedSourceTag) {
     throw new Error("consumer_source_tag_mismatch");
   }

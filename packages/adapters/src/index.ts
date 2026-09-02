@@ -19,6 +19,15 @@ export {
   type ErpSnackV2Tuple,
 } from "./erp-snack-profile-v2.js";
 export {
+  buildErpSnackConsumerV3,
+  projectErpSnackV3Observations,
+  type BuildErpSnackConsumerV3Input,
+} from "./build-erp-snack-consumer-v3.js";
+export {
+  ERP_SNACK_V3_TUPLES,
+  type ErpSnackV3Tuple,
+} from "./erp-snack-profile-v3.js";
+export {
   verifyConsumerBundle,
   writeConsumerBundle,
   type CreatedConsumerBundle,
