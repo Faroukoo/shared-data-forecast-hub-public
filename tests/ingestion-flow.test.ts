@@ -18,6 +18,7 @@ import { LocalArtifactStore } from "@data-hub/artifact-store";
 import {
   HCP_IPC_2017_OFFICIAL_G1_SOURCE,
   HCP_IPC_2017_SOURCE,
+  HCP_IPPI_2018_OFFICIAL_G2_SOURCE,
 } from "@data-hub/source-registry";
 import { validateDataHubState } from "@data-hub/snapshot";
 
@@ -26,6 +27,7 @@ import { createSafeLogger } from "../apps/ingest-cli/src/safe-log.js";
 import {
   createCkanFetchFixture,
   createHcpOfficialIpcFixture,
+  createHcpOfficialIppiFixture,
   createIpcFixture,
 } from "./fixture-workbooks.js";
 
@@ -39,6 +41,7 @@ async function repackageOfficialFixture(input: {
   creator: string;
   firstValue?: number;
   clearCell?: string;
+  dashCells?: readonly string[];
 }): Promise<Uint8Array> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(Uint8Array.from(input.bytes).buffer);
@@ -52,6 +55,11 @@ async function repackageOfficialFixture(input: {
     const sheet = workbook.worksheets[0];
     if (!sheet) throw new Error("missing_fixture_sheet");
     sheet.getCell(input.clearCell).value = null;
+  }
+  if (input.dashCells !== undefined) {
+    const sheet = workbook.worksheets[0];
+    if (!sheet) throw new Error("missing_fixture_sheet");
+    for (const cell of input.dashCells) sheet.getCell(cell).value = "-";
   }
   return new Uint8Array(await workbook.xlsx.writeBuffer());
 }
@@ -207,6 +215,49 @@ void test("deduplicates repackaged Google XLSX values and revises semantic chang
     OFFICIAL_EXPORT_URL,
   ]);
   assert.equal(second.request_target, OFFICIAL_EXPORT_URL);
+});
+
+void test("deduplicates a repackaged fixed IPPI profile with an empty series period", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "data-hub-ippi-empty-series-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const base = await createHcpOfficialIppiFixture("ippi-2018-official-g2");
+  const firstBytes = await repackageOfficialFixture({
+    bytes: base,
+    creator: "first-package",
+    dashCells: ["D23", "D24"],
+  });
+  const repackagedBytes = await repackageOfficialFixture({
+    bytes: base,
+    creator: "second-package",
+    dashCells: ["D23", "D24"],
+  });
+  assert.notDeepEqual(firstBytes, repackagedBytes);
+
+  const requestedUrls: string[] = [];
+  const fetchImpl = createGoogleSheetsFetchSequence(
+    [firstBytes, repackagedBytes],
+    requestedUrls,
+  );
+  const first = await runRemoteIngestion({
+    sourceId: HCP_IPPI_2018_OFFICIAL_G2_SOURCE.source_id,
+    dataDir: root,
+    fetchImpl,
+    now: OFFICIAL_NOW,
+  });
+  const second = await runRemoteIngestion({
+    sourceId: HCP_IPPI_2018_OFFICIAL_G2_SOURCE.source_id,
+    dataDir: root,
+    fetchImpl,
+    now: "2026-09-01T12:01:00.000Z",
+  });
+
+  assert.equal(first.state, "published");
+  const report = JSON.parse(
+    await readFile(join(root, "quality", `${second.run_id}.json`), "utf8"),
+  ) as { failed_gate_codes: string[] };
+  assert.equal(report.failed_gate_codes.includes("new_label"), false);
+  assert.equal(second.state, "no_change");
+  assert.equal(second.dataset_id, first.dataset_id);
 });
 
 void test("resumes an archived but unpublished artifact", async (t) => {

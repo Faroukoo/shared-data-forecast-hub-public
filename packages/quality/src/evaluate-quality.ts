@@ -308,6 +308,7 @@ export function evaluateQuality(input: EvaluateQualityInput): QualityReport {
     });
   }
   if (
+    source.parser.kind !== "hcp-official-indicator-workbook" &&
     previousCoverage &&
     parsed.observed_labels.some((label) => !previousCoverage.labels.includes(label))
   ) {
