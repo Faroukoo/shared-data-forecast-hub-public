@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
+import ExcelJS from "exceljs";
+
 import { canonicalJson, sha256Hex } from "@data-hub/canonical";
 import {
   ERP_SNACK_V3_TUPLES,
@@ -91,8 +93,8 @@ function observation(input: {
     location_key: locationKey,
     source_id: sourceId,
     artifact_sha256: "c".repeat(64),
-    source_row: input.periodIndex + 1,
-    source_column: 4,
+    source_row: input.periodIndex + 25,
+    source_column: 3,
     retrieved_at: V3_GENERATED_AT,
     source_published_at: null,
     quality_status: qualityStatus,
@@ -139,6 +141,16 @@ function observations(): CanonicalObservation[] {
     observation({ periodIndex: 24, qualityStatus: "quarantined" }),
   );
   return rows;
+}
+
+async function repackageOfficialFixture(
+  bytes: Uint8Array,
+  creator: string,
+): Promise<Uint8Array> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(Uint8Array.from(bytes).buffer);
+  workbook.creator = creator;
+  return new Uint8Array(await workbook.xlsx.writeBuffer());
 }
 
 function snapshot(overrides: Partial<SnapshotIndex> = {}): SnapshotIndex {
@@ -249,6 +261,47 @@ void test("rejects duplicate revisions for the selected tuple period", () => {
   assert.throws(() => project(rows), /consumer_v3_period_revision_duplicate/);
 });
 
+void test("rejects non-consecutive or broken revision chains", () => {
+  const baseRows = observations();
+  const revisionOne = baseRows.at(-5) ?? assert.fail("missing latest base period");
+  const revisionTwo = observation({
+    periodIndex: 24,
+    revisionNumber: 2,
+    value: "999",
+  });
+  const brokenRevisionTwo = recomputeObservationId({
+    ...revisionTwo,
+    supersedes_observation_id: `sha256:${"a".repeat(64)}`,
+  });
+  assert.notEqual(brokenRevisionTwo.supersedes_observation_id, revisionOne.observation_id);
+  assert.throws(
+    () => project([...baseRows, brokenRevisionTwo]),
+    /consumer_v3_revision_chain_invalid:2026-08-01/,
+  );
+
+  const revisionThree = recomputeObservationId({
+    ...revisionTwo,
+    revision_number: 3,
+    supersedes_observation_id: revisionOne.observation_id,
+  });
+  assert.throws(
+    () => project([...baseRows, revisionThree]),
+    /consumer_v3_revision_chain_invalid:2026-08-01/,
+  );
+});
+
+void test("accepts an isolated later revision with a full predecessor hash", () => {
+  const rows = observations();
+  rows[24] = observation({
+    periodIndex: 24,
+    revisionNumber: 2,
+    value: "999",
+  });
+  const payload = project(rows);
+  assert.equal(payload.observations.at(-1)?.revision_number, 2);
+  assert.equal(payload.observations.at(-1)?.value, "999");
+});
+
 void test("rejects source-specific provenance mutations before revision resolution", () => {
   const base = observation({ periodIndex: 1 });
   const mutations: ReadonlyArray<{
@@ -268,6 +321,21 @@ void test("rejects source-specific provenance mutations before revision resoluti
       row: { ...base, observation_id: `sha256:${"f".repeat(64)}` },
     },
     {
+      name: "source row precedes the G1 data region",
+      row: recomputeObservationId({ ...base, source_row: 24 }),
+    },
+    {
+      name: "source column is not the G1 food series",
+      row: recomputeObservationId({ ...base, source_column: 4 }),
+    },
+    {
+      name: "source publishes a timestamp absent from G1",
+      row: recomputeObservationId({
+        ...base,
+        source_published_at: "2024-09-30T00:00:00.000Z",
+      }),
+    },
+    {
       name: "revision one supersedes a predecessor",
       row: recomputeObservationId({
         ...base,
@@ -280,6 +348,14 @@ void test("rejects source-specific provenance mutations before revision resoluti
         ...base,
         revision_number: 2,
         supersedes_observation_id: null,
+      }),
+    },
+    {
+      name: "later revision carries a short predecessor hash",
+      row: recomputeObservationId({
+        ...base,
+        revision_number: 2,
+        supersedes_observation_id: "sha256:short",
       }),
     },
   ];
@@ -321,22 +397,6 @@ void test("rejects a selected artifact outside published snapshot evidence", () 
     () => project(rows),
     /consumer_v3_observation_artifact_mismatch/,
   );
-});
-
-void test("allows a no-change snapshot to carry its verified prior dataset artifact", () => {
-  const source = snapshot().sources[0] ?? assert.fail("missing snapshot source");
-  const noChangeSnapshot = snapshot({
-    sources: [{
-      ...source,
-      state: "no_change",
-      artifact_sha256: "b".repeat(64),
-    }],
-  });
-  assert.doesNotThrow(() => projectErpSnackV3Observations({
-    observationsBySource: new Map([[V3_SOURCE_ID, observations()]]),
-    snapshot: noChangeSnapshot,
-    sources: [HCP_IPC_2017_OFFICIAL_G1_SOURCE],
-  }));
 });
 
 const SOURCE_MUTATIONS: ReadonlyArray<{
@@ -455,4 +515,74 @@ void test("builder reads only the verified official snapshot dataset", async (t)
     snapshot: snapshot({ dataset_ids: [DATASET_ID] }),
     sourceTag: V3_SNAPSHOT_TAG,
   }), /snapshot_dataset_ids_mismatch/);
+});
+
+void test("builder accepts a verified repackaged no-change snapshot", async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), "erp-snack-consumer-v3-no-change-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const periods = PERIODS.map(([start]) => start.slice(0, 7).replace("-", "/"));
+  const base = await createHcpOfficialIpcFixture("ipc-2017-official-g1", { periods });
+  const firstWorkbook = await repackageOfficialFixture(base, "first-package");
+  const repackagedWorkbook = await repackageOfficialFixture(base, "second-package");
+  assert.notDeepEqual(firstWorkbook, repackagedWorkbook);
+
+  const responses = [firstWorkbook, repackagedWorkbook];
+  let responseIndex = 0;
+  const fetchImpl: typeof fetch = () => {
+    const bytes = responses[responseIndex];
+    responseIndex += 1;
+    if (!bytes) return Promise.resolve(new Response("fixture exhausted", { status: 500 }));
+    return Promise.resolve(new Response(bytes, {
+      status: 200,
+      headers: {
+        "content-length": String(bytes.byteLength),
+        "content-type":
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      },
+    }));
+  };
+  const first = await runRemoteIngestion({
+    sourceId: V3_SOURCE_ID,
+    dataDir,
+    fetchImpl,
+    now: V3_GENERATED_AT,
+  });
+  const noChangeCreatedAt = "2026-09-01T12:01:00.000Z";
+  const second = await runRemoteIngestion({
+    sourceId: V3_SOURCE_ID,
+    dataDir,
+    fetchImpl,
+    now: noChangeCreatedAt,
+  });
+  assert.equal(first.state, "published");
+  assert.equal(second.state, "no_change");
+  assert.notEqual(first.artifact_sha256, second.artifact_sha256);
+  assert.equal(second.dataset_id, first.dataset_id);
+
+  const datasetId = second.dataset_id ?? assert.fail("missing no-change dataset");
+  const source = snapshot().sources[0] ?? assert.fail("missing snapshot source");
+  const verifiedSnapshot = snapshot({
+    created_at: noChangeCreatedAt,
+    sources: [{
+      ...source,
+      run_id: second.run_id,
+      state: second.state,
+      artifact_sha256: second.artifact_sha256,
+      dataset_id: datasetId,
+      failure_code: second.failure_code,
+    }],
+    dataset_ids: [datasetId],
+  });
+  const payload = await buildErpSnackConsumerV3({
+    dataDir,
+    snapshot: verifiedSnapshot,
+    sourceTag: `data-20260901T120100Z-${V3_SNAPSHOT_ID.slice(0, 12)}`,
+  });
+  assert.equal(payload.observations.length, 24);
+  assert.ok(payload.observations.every((row) =>
+    row.artifact_sha256 === first.artifact_sha256
+  ));
+  assert.ok(payload.observations.every((row) =>
+    row.artifact_sha256 !== second.artifact_sha256
+  ));
 });

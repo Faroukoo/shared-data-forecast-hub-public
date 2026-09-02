@@ -27,6 +27,7 @@ const ADMISSIBLE_SOURCE_HEALTH = new Set(["healthy", "late", "stale"]);
 const DAY_MS = 86_400_000;
 const FOOD_SERIES_LABEL =
   "Produits alimentaires et boissons non alcoolisées";
+const OBSERVATION_ID_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
 type AdmittedObservation = CanonicalObservation & {
   quality_status: ConsumerV3Observation["quality_status"];
@@ -140,10 +141,14 @@ function validateSourceObservation(row: AdmittedObservation): void {
   const expectedObservationId = `sha256:${sha256Hex(canonicalJson(evidence))}`;
   const revisionLinkInvalid = row.revision_number === 1
     ? row.supersedes_observation_id !== null
-    : row.supersedes_observation_id === null;
+    : row.supersedes_observation_id === null ||
+      !OBSERVATION_ID_PATTERN.test(row.supersedes_observation_id);
   if (
     row.natural_key !== expectedNaturalKey ||
     row.source_series_label !== FOOD_SERIES_LABEL ||
+    row.source_column !== 3 ||
+    row.source_row < 25 ||
+    row.source_published_at !== null ||
     row.observation_id !== expectedObservationId ||
     revisionLinkInvalid
   ) {
@@ -155,19 +160,37 @@ function currentRevisionByPeriod(
   rows: readonly AdmittedObservation[],
 ): AdmittedObservation[] {
   const seenRevisions = new Set<string>();
-  const selected = new Map<string, AdmittedObservation>();
+  const rowsByPeriod = new Map<string, AdmittedObservation[]>();
   for (const row of rows) {
     const revisionKey = `${row.period_start}|${String(row.revision_number)}`;
     if (seenRevisions.has(revisionKey)) {
       throw new Error(`consumer_v3_period_revision_duplicate:${revisionKey}`);
     }
     seenRevisions.add(revisionKey);
-    const current = selected.get(row.period_start);
-    if (!current || row.revision_number > current.revision_number) {
-      selected.set(row.period_start, row);
-    }
+    const periodRows = rowsByPeriod.get(row.period_start) ?? [];
+    periodRows.push(row);
+    rowsByPeriod.set(row.period_start, periodRows);
   }
-  return [...selected.values()].sort((left, right) =>
+
+  const selected: AdmittedObservation[] = [];
+  for (const [periodStart, periodRows] of rowsByPeriod) {
+    periodRows.sort((left, right) => left.revision_number - right.revision_number);
+    for (let index = 1; index < periodRows.length; index += 1) {
+      const previous = periodRows[index - 1];
+      const current = periodRows[index];
+      if (
+        !previous ||
+        !current ||
+        current.revision_number !== previous.revision_number + 1 ||
+        current.supersedes_observation_id !== previous.observation_id
+      ) {
+        throw new Error(`consumer_v3_revision_chain_invalid:${periodStart}`);
+      }
+    }
+    const latest = periodRows.at(-1);
+    if (latest) selected.push(latest);
+  }
+  return selected.sort((left, right) =>
     compareCodeUnits(left.period_start, right.period_start) ||
     left.revision_number - right.revision_number
   );
