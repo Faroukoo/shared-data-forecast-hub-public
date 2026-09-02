@@ -1,11 +1,16 @@
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_REDIRECTS = 3;
-const ALLOWED_HOSTS = new Set(["data.gov.ma", "www.data.gov.ma"]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+export interface SafeFetchHostPolicy {
+  allowInitial(url: URL): boolean;
+  allowRedirect(url: URL): boolean;
+}
 
 export interface SafeFetchInput {
   url: string;
   fetchImpl?: typeof fetch;
+  hostPolicy: SafeFetchHostPolicy;
   maxBytes: number;
   method?: "GET" | "HEAD";
   timeoutMs?: number;
@@ -22,7 +27,11 @@ export interface SafeFetchResult {
   bytes: Uint8Array;
 }
 
-function checkedUrl(rawUrl: string, redirect: boolean): URL {
+function checkedUrl(
+  rawUrl: string,
+  redirect: boolean,
+  hostPolicy: SafeFetchHostPolicy,
+): URL {
   const url = new URL(rawUrl);
   if (url.protocol !== "https:") {
     throw new Error("https_required");
@@ -30,7 +39,10 @@ function checkedUrl(rawUrl: string, redirect: boolean): URL {
   if (url.username || url.password) {
     throw new Error("url_credentials_not_allowed");
   }
-  if (!ALLOWED_HOSTS.has(url.hostname.toLowerCase())) {
+  const allowed = redirect
+    ? hostPolicy.allowRedirect(url)
+    : hostPolicy.allowInitial(url);
+  if (!allowed) {
     throw new Error(redirect ? "redirect_host_not_allowed" : "host_not_allowed");
   }
   return url;
@@ -117,7 +129,7 @@ export async function safeFetch(input: SafeFetchInput): Promise<SafeFetchResult>
   const method = input.method ?? "GET";
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRedirects = input.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-  let url = checkedUrl(input.url, false);
+  let url = checkedUrl(input.url, false, input.hostPolicy);
 
   for (let redirectCount = 0; ; redirectCount += 1) {
     const attempt = await fetchWithTimeout(fetchImpl, url, method, timeoutMs);
@@ -129,7 +141,7 @@ export async function safeFetch(input: SafeFetchInput): Promise<SafeFetchResult>
         }
         const location = response.headers.get("location");
         if (!location) throw new Error("redirect_without_location");
-        url = checkedUrl(new URL(location, url).toString(), true);
+        url = checkedUrl(new URL(location, url).toString(), true, input.hostPolicy);
         continue;
       }
       if (!response.ok) {

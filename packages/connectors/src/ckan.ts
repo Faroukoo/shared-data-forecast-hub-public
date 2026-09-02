@@ -1,9 +1,20 @@
 import type { SourceDefinition } from "@data-hub/contracts";
 
-import { safeFetch } from "./safe-http.js";
+import {
+  safeFetch,
+  type SafeFetchHostPolicy,
+} from "./safe-http.js";
 
 const DISCOVERY_MAX_BYTES = 1024 * 1024;
 export const ARTIFACT_MAX_BYTES = 4 * 1024 * 1024;
+const CKAN_HOSTS = new Set(["data.gov.ma", "www.data.gov.ma"]);
+function isCkanHost(url: URL): boolean {
+  return CKAN_HOSTS.has(url.hostname.toLowerCase());
+}
+const CKAN_HOST_POLICY: SafeFetchHostPolicy = {
+  allowInitial: isCkanHost,
+  allowRedirect: isCkanHost,
+};
 
 export interface CkanResource {
   id: string;
@@ -61,7 +72,7 @@ function validateResourceUrl(rawUrl: string): void {
   const url = new URL(rawUrl);
   if (url.protocol !== "https:") throw new Error("https_required");
   if (url.username || url.password) throw new Error("url_credentials_not_allowed");
-  if (!["data.gov.ma", "www.data.gov.ma"].includes(url.hostname.toLowerCase())) {
+  if (!isCkanHost(url)) {
     throw new Error("resource_host_not_allowed");
   }
 }
@@ -76,6 +87,7 @@ export async function discoverCkanResource(
   const response = await safeFetch({
     url: discoveryUrl.toString(),
     fetchImpl,
+    hostPolicy: CKAN_HOST_POLICY,
     maxBytes: DISCOVERY_MAX_BYTES,
   });
 
@@ -131,6 +143,7 @@ export async function probeCkanResource(
   const response = await safeFetch({
     url: discovery.resource.url,
     fetchImpl,
+    hostPolicy: CKAN_HOST_POLICY,
     method: "HEAD",
     maxBytes: ARTIFACT_MAX_BYTES,
   });
@@ -151,6 +164,7 @@ export async function downloadCkanResource(
   const response = await safeFetch({
     url: discovery.resource.url,
     fetchImpl,
+    hostPolicy: CKAN_HOST_POLICY,
     maxBytes: ARTIFACT_MAX_BYTES,
   });
   const mimeIsXlsx = response.contentType

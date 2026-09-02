@@ -17,6 +17,7 @@ import {
 import {
   canonicalJson,
   findPublishedDatasetByArtifact,
+  hasSemanticObservationChanges,
   publishDataset,
   resolveRevisions,
 } from "@data-hub/canonical";
@@ -87,6 +88,86 @@ void test("adds a revision instead of rewriting an earlier value", () => {
   assert.equal(
     revised.supersedes_observation_id,
     previousObservation.observation_id,
+  );
+});
+
+void test("ignores provenance and quality-only differences in semantic observations", () => {
+  const previous = observation({
+    artifact_sha256: "b".repeat(64),
+    source_row: 99,
+    source_column: 12,
+    retrieved_at: "2026-08-27T12:00:00.000Z",
+    source_published_at: "2026-08-27T10:00:00.000Z",
+    quality_status: "accepted_with_warning",
+    warning_codes: ["stale_source"],
+  });
+  const repackaged = candidate({
+    artifact_sha256: "c".repeat(64),
+    source_row: 7,
+    source_column: 8,
+    retrieved_at: "2026-08-28T12:00:00.000Z",
+    source_published_at: null,
+    scalar_reproducible: false,
+  });
+
+  assert.equal(
+    hasSemanticObservationChanges({ candidates: [repackaged], previous: [previous] }),
+    false,
+  );
+});
+
+const semanticMutations: ReadonlyArray<
+  readonly [string, Partial<ObservationCandidate>]
+> = [
+  ["value", { value: "96.7" }],
+  ["period", { period_start: "2017-02-01", period_end: "2017-02-28" }],
+  ["label", { source_series_label: "POISSONS" }],
+  ["location", { location_key: "ma:city:casablanca" }],
+  ["unit", { unit: "percent" }],
+  ["scaling factor", { scaling_factor: "100" }],
+  ["source", { source_id: "hcp-other-monthly" }],
+];
+
+for (const [name, overrides] of semanticMutations) {
+  void test(`detects a changed observation ${name}`, () => {
+    assert.equal(
+      hasSemanticObservationChanges({
+        candidates: [candidate(overrides)],
+        previous: [observation()],
+      }),
+      true,
+    );
+  });
+}
+
+void test("detects candidate natural-key additions and current-key removals", () => {
+  const current = observation();
+  const added = candidate({
+    natural_key: "hcp.ipc2017.0115|ma|2017-01",
+    series_key: "hcp.ipc2017.0115",
+  });
+
+  assert.equal(
+    hasSemanticObservationChanges({
+      candidates: [candidate(), added],
+      previous: [current],
+    }),
+    true,
+  );
+  assert.equal(
+    hasSemanticObservationChanges({ candidates: [], previous: [current] }),
+    true,
+  );
+});
+
+void test("rejects conflicting duplicate candidates during semantic comparison", () => {
+  assert.throws(
+    () =>
+      hasSemanticObservationChanges({
+        candidates: [candidate(), candidate({ value: "96.7" })],
+        previous: [observation()],
+      }),
+    /conflicting_candidate:hcp\.ipc2017\.0113\|ma\|2017-01/,
   );
 });
 

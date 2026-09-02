@@ -423,6 +423,10 @@ export async function validateDataHubState(
       : undefined;
     const dataset = run.dataset_id ? datasets.get(run.dataset_id) : undefined;
     const quality = qualities.get(run.run_id);
+    const isQualifiedSemanticNoChange =
+      run.state === "no_change" &&
+      quality !== undefined &&
+      quality.status !== "quarantined";
     if (evidence.artifactRequired && !artifact) {
       throw new Error(`missing_run_artifact:${run.run_id}`);
     }
@@ -437,7 +441,8 @@ export async function validateDataHubState(
       (dataset &&
         (dataset.source_id !== run.source_id ||
           (run.artifact_sha256 !== null &&
-            !dataset.artifact_sha256s.includes(run.artifact_sha256)))) ||
+            !dataset.artifact_sha256s.includes(run.artifact_sha256) &&
+            !isQualifiedSemanticNoChange))) ||
       (quality &&
         (quality.source_id !== run.source_id ||
           quality.artifact_sha256 !== run.artifact_sha256))

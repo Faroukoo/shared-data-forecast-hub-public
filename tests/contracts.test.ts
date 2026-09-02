@@ -45,6 +45,125 @@ void test("accepts one fully qualified monthly CKAN source", () => {
   assert.equal(parsed.source_id, "hcp-ipc-2017-monthly");
 });
 
+void test("accepts a bounded official HCP Google Sheets definition", () => {
+  const parsed = SourceDefinitionSchema.parse({
+    schema_version: SCHEMA_VERSION,
+    source_id: "hcp-ipc-2017-official-g1-monthly",
+    publisher_name: "Haut-Commissariat au Plan",
+    authority_level: "official",
+    access_mode: "api",
+    enabled: true,
+    official_base_url: "https://www.hcp.ma/Indices-des-prix-a-la-consommation-IPC_r348.html",
+    licence: {
+      id: "CC-BY-4.0",
+      evidence_url: "https://www.hcp.ma/Conditions-generales-d-utilisation-Version-1-0_a2194.html",
+      permits_internal_derived_use: true,
+      permits_redistribution: true,
+    },
+    cadence: {
+      publication_frequency: "monthly",
+      normal_publication_lag_days: 45,
+      poll_interval_days: 7,
+      warning_age_days: 60,
+      expiry_age_days: 120,
+    },
+    connector: {
+      kind: "google-sheets-xlsx",
+      spreadsheet_id: "1mwwtnpnnWH6rxnnLuz3j07QYsvxFVci6EKTCZea0t-8",
+      sheet_gid: "0",
+    },
+    parser: {
+      kind: "hcp-official-indicator-workbook",
+      profile: "ipc-2017-official-g1",
+    },
+    geography_scope: ["country"],
+    series_scope: ["consumer_price_index"],
+    owner: "data-hub",
+    recovery_procedure: "docs/operations/import-and-recovery.md",
+  });
+
+  assert.equal(parsed.connector.kind, "google-sheets-xlsx");
+  assert.equal(parsed.parser.kind, "hcp-official-indicator-workbook");
+});
+
+void test("rejects malformed official HCP connector and parser definitions", () => {
+  const definition = {
+    schema_version: SCHEMA_VERSION,
+    source_id: "hcp-ipc-2017-official-g1-monthly",
+    publisher_name: "Haut-Commissariat au Plan",
+    authority_level: "official",
+    access_mode: "api",
+    enabled: true,
+    official_base_url: "https://www.hcp.ma/Indices-des-prix-a-la-consommation-IPC_r348.html",
+    licence: {
+      id: "CC-BY-4.0",
+      evidence_url: "https://www.hcp.ma/Conditions-generales-d-utilisation-Version-1-0_a2194.html",
+      permits_internal_derived_use: true,
+      permits_redistribution: true,
+    },
+    cadence: {
+      publication_frequency: "monthly",
+      normal_publication_lag_days: 45,
+      poll_interval_days: 7,
+      warning_age_days: 60,
+      expiry_age_days: 120,
+    },
+    connector: {
+      kind: "google-sheets-xlsx",
+      spreadsheet_id: "1mwwtnpnnWH6rxnnLuz3j07QYsvxFVci6EKTCZea0t-8",
+      sheet_gid: "0",
+    },
+    parser: {
+      kind: "hcp-official-indicator-workbook",
+      profile: "ipc-2017-official-g1",
+    },
+    geography_scope: ["country"],
+    series_scope: ["consumer_price_index"],
+    owner: "data-hub",
+    recovery_procedure: "docs/operations/import-and-recovery.md",
+  };
+
+  assert.equal(
+    SourceDefinitionSchema.safeParse({
+      ...definition,
+      connector: { ...definition.connector, spreadsheet_id: "sheet/one" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    SourceDefinitionSchema.safeParse({
+      ...definition,
+      connector: { ...definition.connector, spreadsheet_id: "sheet.one" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    SourceDefinitionSchema.safeParse({
+      ...definition,
+      connector: { ...definition.connector, sheet_gid: "gid-1" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    SourceDefinitionSchema.safeParse({
+      ...definition,
+      parser: { ...definition.parser, profile: "ipc-unknown" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    SourceDefinitionSchema.safeParse({
+      ...definition,
+      official_base_url: "http://www.hcp.ma/indicator",
+    }).success,
+    false,
+  );
+  assert.equal(
+    SourceDefinitionSchema.safeParse({ ...definition, unexpected: true }).success,
+    false,
+  );
+});
+
 void test("rejects an unknown contract major", () => {
   assert.throws(() => {
     assertSupportedSchemaVersion("2.0.0");

@@ -1,6 +1,5 @@
 import ExcelJS from "exceljs";
 import { Decimal } from "decimal.js";
-import * as unzipper from "unzipper";
 
 import {
   ObservationCandidateSchema,
@@ -13,10 +12,7 @@ import {
 import { HCP_LOCATION_KEYS } from "@data-hub/source-registry";
 
 import { parseHcpMonthHeader, type HcpMonthPeriod } from "./hcp-period.js";
-
-const MAX_WORKBOOK_BYTES = 4 * 1024 * 1024;
-const MAX_XLSX_ENTRIES = 256;
-const MAX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024;
+import { enforceZipLimits } from "./xlsx-zip-limits.js";
 
 export interface ParseHcpWorkbookInput {
   source: SourceDefinition;
@@ -103,34 +99,13 @@ function scalarFromCell(
   }
 }
 
-function sectorSlug(label: string): string {
+export function sectorSlug(label: string): string {
   return label
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
-}
-
-async function enforceZipLimits(input: ParseHcpWorkbookInput): Promise<void> {
-  if (input.bytes.byteLength > MAX_WORKBOOK_BYTES) throw new Error("workbook_too_large");
-  let directory: unzipper.CentralDirectory;
-  try {
-    directory = await unzipper.Open.buffer(Buffer.from(input.bytes));
-  } catch (error) {
-    throw new Error("invalid_xlsx_container", { cause: error });
-  }
-  const maxEntries = input.limits?.maxEntries ?? MAX_XLSX_ENTRIES;
-  if (directory.files.length > maxEntries) throw new Error("xlsx_too_many_entries");
-  const uncompressedBytes = directory.files.reduce(
-    (total, file) => total + file.uncompressedSize,
-    0,
-  );
-  const maxUncompressed =
-    input.limits?.maxUncompressedBytes ?? MAX_UNCOMPRESSED_BYTES;
-  if (uncompressedBytes > maxUncompressed) {
-    throw new Error("xlsx_uncompressed_too_large");
-  }
 }
 
 function periodColumns(

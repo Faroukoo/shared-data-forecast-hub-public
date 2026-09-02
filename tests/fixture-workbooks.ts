@@ -10,6 +10,84 @@ interface IpcFixtureOptions {
   includeCasablanca?: boolean;
 }
 
+export type HcpOfficialIpcProfile =
+  | "ipc-2017-official-g1"
+  | "ipc-2017-official-g2";
+
+export type HcpOfficialIppiProfile =
+  | "ippi-2018-official-g1"
+  | "ippi-2018-official-g2"
+  | "ippi-2018-official-g3";
+
+interface HcpOfficialFixtureOptions {
+  headerRowOffset?: number;
+  duplicateLabel?: boolean;
+  unknownLabel?: boolean;
+  paddedLabel?: boolean;
+  reorderedLabels?: boolean;
+  dateHeader?: string;
+  appendedBusinessColumn?: boolean;
+  sparseAppendedBusinessRow?: number;
+  sparseStyledEmptyRow?: number;
+  periods?: readonly (string | Date)[];
+  unexpectedString?: boolean;
+  emptyValues?: boolean;
+  blankFirstValue?: boolean;
+  omitFooter?: boolean;
+  paddedFooter?: boolean;
+}
+
+const OFFICIAL_IPC_LABELS = {
+  "ipc-2017-official-g1": [
+    "Produits alimentaires et boissons non alcoolisées",
+    "Boissons alcoolisées, tabac et stupéfiants",
+    "Articles d'habillement et chaussures",
+    "Logement, eau, gaz, électricité et autres combustibles",
+    "Meubles, articles de ménage et entretien courant du foyer",
+    "Santé",
+  ],
+  "ipc-2017-official-g2": [
+    "Transports",
+    "Communications",
+    "Loisirs et culture",
+    "Enseignement",
+    "Restaurants et hôtels",
+    "Biens et services divers",
+  ],
+} as const;
+
+const OFFICIAL_IPPI_LABELS = {
+  "ippi-2018-official-g1": [
+    "Industries alimentaires",
+    "Fabrication de Boissons",
+    "Fabrication de produits à base de tabac",
+    "Fabrication de textiles",
+    "Industrie d'habillement",
+    "Industrie de cuir et de la chaussure",
+    "Travail du bois et fabrication d'articles en bois",
+    "Industrie du papier et du carton",
+  ],
+  "ippi-2018-official-g2": [
+    "Imprimerie et reproduction d’enregistrement",
+    "Cokéfaction et raffinage",
+    "Industrie chimique",
+    "Industrie pharmaceutique",
+    "Fabrication de produits en caoutchouc et en plastique",
+    "Fabrication d'autres produits minéraux non métalliques",
+    "Métallurgie",
+  ],
+  "ippi-2018-official-g3": [
+    "Fabrication de produits métalliques",
+    "Fabrication de produits informatique",
+    "Fabrication d’équipements électriques",
+    "Fabrication de machines et équipements n.c.a",
+    "Industrie automobile",
+    "Fabrication d'autres matériels de transport",
+    "fabrication de meubles",
+    "Autres industries manufacturés",
+  ],
+} as const;
+
 function addMetadata(
   workbook: ExcelJS.Workbook,
   periodicity = "Mensuelle",
@@ -27,6 +105,114 @@ function addMetadata(
 
 async function bytes(workbook: ExcelJS.Workbook): Promise<Uint8Array> {
   return new Uint8Array(await workbook.xlsx.writeBuffer());
+}
+
+function setOfficialFixtureRows(
+  sheet: ExcelJS.Worksheet,
+  headerRow: number,
+  labels: readonly string[],
+  periods: readonly (string | Date)[],
+  footerLabel: string,
+  options: HcpOfficialFixtureOptions,
+): void {
+  const fixtureLabels = [...labels];
+  if (options.duplicateLabel && fixtureLabels.length > 1) {
+    fixtureLabels[fixtureLabels.length - 1] = fixtureLabels[0] ?? "";
+  }
+  if (options.unknownLabel) fixtureLabels[0] = "Libellé HCP inventé";
+  if (options.paddedLabel) fixtureLabels[0] = ` ${fixtureLabels[0] ?? ""} `;
+  if (options.reorderedLabels && fixtureLabels.length > 1) {
+    [fixtureLabels[0], fixtureLabels[1]] = [
+      fixtureLabels[1] ?? "",
+      fixtureLabels[0] ?? "",
+    ];
+  }
+
+  sheet.getCell(headerRow, 2).value = options.dateHeader ?? "Mois";
+  fixtureLabels.forEach((label, index) => {
+    sheet.getCell(headerRow, index + 3).value = label;
+  });
+  if (options.appendedBusinessColumn) {
+    sheet.getCell(headerRow, fixtureLabels.length + 3).value = "Indice appendu";
+  }
+  periods.forEach((period, periodIndex) => {
+    const row = headerRow + periodIndex + 1;
+    sheet.getCell(row, 2).value = period;
+    fixtureLabels.forEach((_label, labelIndex) => {
+      if (options.emptyValues) return;
+      const column = labelIndex + 3;
+      sheet.getCell(row, column).value =
+        options.blankFirstValue && periodIndex === 0 && labelIndex === 0
+          ? null
+          : options.unexpectedString && periodIndex === 0 && labelIndex === 0
+          ? "indisponible"
+          : 100 + periodIndex + (labelIndex + 5) / 10;
+    });
+    if (options.appendedBusinessColumn) {
+      sheet.getCell(row, fixtureLabels.length + 3).value = 999;
+    }
+  });
+  if (!options.omitFooter) {
+    const footerRow = headerRow + periods.length + 1;
+    sheet.mergeCells(footerRow, 2, footerRow, fixtureLabels.length + 2);
+    sheet.getCell(footerRow, 2).value = options.paddedFooter
+      ? ` ${footerLabel}`
+      : footerLabel;
+  }
+  if (options.sparseAppendedBusinessRow !== undefined) {
+    sheet.getCell(
+      options.sparseAppendedBusinessRow,
+      fixtureLabels.length + 3,
+    ).value = 999;
+  }
+  if (options.sparseStyledEmptyRow !== undefined) {
+    sheet.getCell(
+      options.sparseStyledEmptyRow,
+      fixtureLabels.length + 3,
+    ).font = { bold: true };
+  }
+}
+
+export async function createHcpOfficialIpcFixture(
+  profile: HcpOfficialIpcProfile,
+  options: HcpOfficialFixtureOptions = {},
+): Promise<Uint8Array> {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("IPC");
+  const headerRow = 24 + (options.headerRowOffset ?? 0);
+  setOfficialFixtureRows(
+    sheet,
+    headerRow,
+    OFFICIAL_IPC_LABELS[profile],
+    options.periods ?? ["2026/07", "2026/08"],
+    "Source : Enquête des prix à la consommation, Haut Commissariat au Plan",
+    options,
+  );
+  return bytes(workbook);
+}
+
+export async function createHcpOfficialIppiFixture(
+  profile: HcpOfficialIppiProfile,
+  options: HcpOfficialFixtureOptions = {},
+): Promise<Uint8Array> {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("IPPI");
+  const headerRow = 22 + (options.headerRowOffset ?? 0);
+  setOfficialFixtureRows(
+    sheet,
+    headerRow,
+    OFFICIAL_IPPI_LABELS[profile],
+    options.periods ?? [
+      new Date(Date.UTC(2026, 6, 1)),
+      "2026/06",
+    ],
+    "Source : Enquête des prix à la production, Haut Commissariat au Plan",
+    options,
+  );
+  if (profile === "ippi-2018-official-g2" && !options.emptyValues) {
+    sheet.getCell(headerRow + 1, 4).value = "-";
+  }
+  return bytes(workbook);
 }
 
 export async function createIpcFixture(
@@ -88,6 +274,53 @@ export async function createWorkbookWithManyZipEntries(): Promise<Uint8Array> {
     workbook.addWorksheet(`S${String(index)}`).getCell("A1").value = index;
   }
   return bytes(workbook);
+}
+
+export async function createWorkbookWithLargeZipExpansion(): Promise<Uint8Array> {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Expanded");
+  const compressiblePayload = "x".repeat(32_700);
+  for (let row = 1; row <= 1_030; row += 1) {
+    sheet.getCell(row, 1).value = `${String(row)}:${compressiblePayload}`;
+  }
+  return bytes(workbook);
+}
+
+export function forgeZipDeclaredUncompressedSizes(
+  input: Uint8Array,
+  declaredSize = 1,
+): Uint8Array {
+  const forged = Uint8Array.from(input);
+  const buffer = Buffer.from(forged.buffer, forged.byteOffset, forged.byteLength);
+  for (let offset = 0; offset <= buffer.length - 4; offset += 1) {
+    const signature = buffer.readUInt32LE(offset);
+    if (signature === 0x04034b50 && offset + 30 <= buffer.length) {
+      buffer.writeUInt32LE(declaredSize, offset + 22);
+    } else if (signature === 0x02014b50 && offset + 46 <= buffer.length) {
+      buffer.writeUInt32LE(declaredSize, offset + 24);
+    }
+  }
+  return forged;
+}
+
+export function forgeZipEndOfCentralDirectoryEntryCounts(
+  input: Uint8Array,
+  declaredCount = 1,
+): Uint8Array {
+  const forged = Uint8Array.from(input);
+  const buffer = Buffer.from(forged.buffer, forged.byteOffset, forged.byteLength);
+  const signature = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  const offset = buffer.lastIndexOf(signature);
+  if (offset < 0 || offset + 22 > buffer.length) {
+    throw new Error("missing_fixture_eocd");
+  }
+  const actualCount = buffer.readUInt16LE(offset + 10);
+  if (actualCount <= declaredCount) {
+    throw new Error("fixture_eocd_count_not_reduced");
+  }
+  buffer.writeUInt16LE(declaredCount, offset + 8);
+  buffer.writeUInt16LE(declaredCount, offset + 10);
+  return forged;
 }
 
 export function createCkanFetchFixture(workbookBytes: Uint8Array): typeof fetch {

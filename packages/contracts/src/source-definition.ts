@@ -45,10 +45,31 @@ const ManualConnectorSchema = z
   })
   .strict();
 
+const GoogleSheetsXlsxConnectorSchema = z
+  .object({
+    kind: z.literal("google-sheets-xlsx"),
+    spreadsheet_id: z.string().regex(/^[A-Za-z0-9_-]+$/),
+    sheet_gid: z.string().regex(/^\d+$/),
+  })
+  .strict();
+
 const HcpParserSchema = z
   .object({
     kind: z.literal("hcp-index-workbook"),
     profile: z.enum(["ipc-2017", "ipp-2018"]),
+  })
+  .strict();
+
+const HcpOfficialIndicatorParserSchema = z
+  .object({
+    kind: z.literal("hcp-official-indicator-workbook"),
+    profile: z.enum([
+      "ipc-2017-official-g1",
+      "ipc-2017-official-g2",
+      "ippi-2018-official-g1",
+      "ippi-2018-official-g2",
+      "ippi-2018-official-g3",
+    ]),
   })
   .strict();
 
@@ -63,8 +84,15 @@ export const SourceDefinitionSchema = z
     official_base_url: HttpsUrlSchema,
     licence: LicenceSchema,
     cadence: CadenceSchema,
-    connector: z.discriminatedUnion("kind", [CkanConnectorSchema, ManualConnectorSchema]),
-    parser: z.discriminatedUnion("kind", [HcpParserSchema]),
+    connector: z.discriminatedUnion("kind", [
+      CkanConnectorSchema,
+      ManualConnectorSchema,
+      GoogleSheetsXlsxConnectorSchema,
+    ]),
+    parser: z.discriminatedUnion("kind", [
+      HcpParserSchema,
+      HcpOfficialIndicatorParserSchema,
+    ]),
     geography_scope: z.array(z.enum(["country", "region", "city", "port", "market"])).min(1),
     series_scope: z.array(z.string().regex(/^[a-z][a-z0-9_]*$/)).min(1),
     owner: z.string().min(1),

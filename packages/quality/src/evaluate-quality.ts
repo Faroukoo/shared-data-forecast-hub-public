@@ -23,6 +23,7 @@ export interface PreviousCoverage {
   seriesCount: number;
   locationCount: number;
   labels: string[];
+  naturalKeys: string[];
 }
 
 export interface EvaluateQualityInput {
@@ -67,7 +68,14 @@ function coverageShrank(
   parsed: ParsedDataset,
   previous: PreviousCoverage | undefined,
 ): boolean {
-  if (!previous || parsed.observations.length === 0) return false;
+  if (!previous) return false;
+  const currentNaturalKeys = new Set(
+    parsed.observations.map((observation) => observation.natural_key),
+  );
+  if (previous.naturalKeys.some((key) => !currentNaturalKeys.has(key))) {
+    return true;
+  }
+  if (parsed.observations.length === 0) return false;
   const firstObservation = parsed.observations[0];
   if (!firstObservation) return false;
   const first = parsed.observations.reduce(
@@ -92,6 +100,8 @@ export type FreshnessCode =
   | "source_stale"
   | "source_late"
   | "invalid_remote_timestamp"
+  | "invalid_period_timestamp"
+  | "future_period"
   | null;
 
 export interface AssessFreshnessInput {
@@ -113,10 +123,93 @@ export function assessFreshness(input: AssessFreshnessInput): FreshnessCode {
   return null;
 }
 
+export interface AssessPeriodFreshnessInput {
+  source: SourceDefinition;
+  now: string;
+  lastPeriodEnd: string | null;
+}
+
+function parseUtcCalendarDate(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const [, year, month, day] = match;
+  const timestamp = Date.UTC(Number(year), Number(month) - 1, Number(day));
+  return new Date(timestamp).toISOString().slice(0, 10) === value ? timestamp : null;
+}
+
+function parseUtcTimestamp(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, fraction = ""] = match;
+  const milliseconds = Number(fraction.padEnd(3, "0"));
+  const timestamp = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    milliseconds,
+  );
+  const date = new Date(timestamp);
+  return Number.isFinite(timestamp) &&
+      date.getUTCFullYear() === Number(year) &&
+      date.getUTCMonth() === Number(month) - 1 &&
+      date.getUTCDate() === Number(day) &&
+      date.getUTCHours() === Number(hour) &&
+      date.getUTCMinutes() === Number(minute) &&
+      date.getUTCSeconds() === Number(second) &&
+      date.getUTCMilliseconds() === milliseconds
+    ? timestamp
+    : null;
+}
+
+function utcCalendarDay(timestamp: number): number {
+  const date = new Date(timestamp);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+export function assessPeriodFreshness(input: AssessPeriodFreshnessInput): FreshnessCode {
+  if (!input.lastPeriodEnd) return null;
+  const nowMs = parseUtcTimestamp(input.now);
+  const periodEndMs = parseUtcCalendarDate(input.lastPeriodEnd);
+  if (nowMs === null || periodEndMs === null) {
+    return "invalid_period_timestamp";
+  }
+  const ageDays = (utcCalendarDay(nowMs) - periodEndMs) / 86_400_000;
+  if (ageDays < 0) return "future_period";
+  if (ageDays > input.source.cadence.expiry_age_days) return "source_stale";
+  if (ageDays > input.source.cadence.warning_age_days) return "source_late";
+  return null;
+}
+
+function expectedBaseYear(source: SourceDefinition): number {
+  if (source.parser.kind === "hcp-index-workbook") {
+    return source.parser.profile === "ipc-2017" ? 2017 : 2018;
+  }
+  switch (source.parser.profile) {
+    case "ipc-2017-official-g1":
+    case "ipc-2017-official-g2":
+      return 2017;
+    case "ippi-2018-official-g1":
+    case "ippi-2018-official-g2":
+    case "ippi-2018-official-g3":
+      return 2018;
+  }
+}
+
+function lastPeriodEnd(parsed: ParsedDataset): string | null {
+  if (parsed.observations.length === 0) return null;
+  return parsed.observations.reduce(
+    (latest, row) => (row.period_end > latest ? row.period_end : latest),
+    parsed.observations[0]?.period_end ?? "",
+  );
+}
+
 export function evaluateQuality(input: EvaluateQualityInput): QualityReport {
   const { source, parsed } = input;
   const { uniqueCount, conflictCount } = uniqueObservationCount(parsed);
-  const expectedBaseYear = source.parser.profile === "ipc-2017" ? 2017 : 2018;
+  const expectedIndexBaseYear = expectedBaseYear(source);
   const invalidLocations = parsed.observations.filter(
     (row) => row.location_key !== "ma" && !row.location_key.startsWith("ma:"),
   ).length;
@@ -164,7 +257,7 @@ export function evaluateQuality(input: EvaluateQualityInput): QualityReport {
     {
       code: "invalid_index_metadata",
       severity: "mandatory",
-      passed: parsed.unit === "index" && parsed.base_year === expectedBaseYear,
+      passed: parsed.unit === "index" && parsed.base_year === expectedIndexBaseYear,
       details: { unit: parsed.unit, base_year: parsed.base_year },
     },
     {
@@ -182,21 +275,48 @@ export function evaluateQuality(input: EvaluateQualityInput): QualityReport {
   ];
 
   const warningCodes = [...parsed.warning_codes];
-  const freshness = assessFreshness({
-    source,
-    now: input.now,
-    remoteLastModified: input.remoteLastModified,
-  });
-  if (freshness) warningCodes.push(freshness);
-  if (coverageShrank(parsed, input.previousCoverage)) {
-    warningCodes.push("coverage_shrinkage");
+  const publishedPeriodEnd = source.connector.kind === "google-sheets-xlsx"
+    ? lastPeriodEnd(parsed)
+    : null;
+  const freshness = source.connector.kind === "google-sheets-xlsx"
+    ? assessPeriodFreshness({
+        source,
+        now: input.now,
+        lastPeriodEnd: publishedPeriodEnd,
+      })
+    : assessFreshness({
+        source,
+        now: input.now,
+        remoteLastModified: input.remoteLastModified,
+      });
+  if (freshness === "future_period") {
+    gates.push({
+      code: freshness,
+      severity: "mandatory",
+      passed: false,
+      details: { last_period_end: publishedPeriodEnd },
+    });
   }
+  if (freshness && freshness !== "future_period") warningCodes.push(freshness);
   const previousCoverage = input.previousCoverage;
+  if (coverageShrank(parsed, previousCoverage)) {
+    gates.push({
+      code: "coverage_shrinkage",
+      severity: "mandatory",
+      passed: false,
+      details: {},
+    });
+  }
   if (
     previousCoverage &&
     parsed.observed_labels.some((label) => !previousCoverage.labels.includes(label))
   ) {
-    warningCodes.push("new_label");
+    gates.push({
+      code: "new_label",
+      severity: "mandatory",
+      passed: false,
+      details: {},
+    });
   }
   for (const warning of [...new Set(warningCodes)]) {
     gates.push({

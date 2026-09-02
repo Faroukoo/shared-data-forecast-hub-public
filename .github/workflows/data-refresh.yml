@@ -160,7 +160,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
-      - name: Run qualified production sources
+      - name: Run all enabled qualified production sources
         id: production
         if: steps.context.outputs.mode == 'refresh'
         env:
@@ -182,7 +182,7 @@ jobs:
             decision="$(node --input-type=module -e 'import fs from "node:fs"; process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).decision)' "$summary_file")"
             echo "decision=$decision" >> "$GITHUB_OUTPUT"
           fi
-      - name: Append safe production summary
+      - name: Append safe enabled-source production summary
         if: always() && steps.context.outputs.mode == 'refresh'
         run: |
           if [ -f "$RUNNER_TEMP/production-summary.md" ]; then

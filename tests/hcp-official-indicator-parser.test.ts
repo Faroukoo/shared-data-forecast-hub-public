@@ -1,0 +1,591 @@
+import assert from "node:assert/strict";
+import { Readable } from "node:stream";
+import test from "node:test";
+
+import ExcelJS from "exceljs";
+import * as unzipper from "unzipper";
+
+import {
+  parseHcpIndexWorkbook,
+  parseHcpOfficialIndicatorWorkbook,
+} from "@data-hub/parsers";
+import {
+  HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+  HCP_IPC_2017_OFFICIAL_G2_SOURCE,
+  HCP_IPC_2017_SOURCE,
+  HCP_IPPI_2018_OFFICIAL_G1_SOURCE,
+  HCP_IPPI_2018_OFFICIAL_G2_SOURCE,
+  HCP_IPPI_2018_OFFICIAL_G3_SOURCE,
+} from "@data-hub/source-registry";
+
+import {
+  createHcpOfficialIpcFixture,
+  createHcpOfficialIppiFixture,
+  createWorkbookWithLargeZipExpansion,
+  createWorkbookWithManyZipEntries,
+  forgeZipDeclaredUncompressedSizes,
+  forgeZipEndOfCentralDirectoryEntryCounts,
+  type HcpOfficialIpcProfile,
+  type HcpOfficialIppiProfile,
+} from "./fixture-workbooks.js";
+import { rawArtifactFactory } from "./test-factories.js";
+
+const RETRIEVED_AT = "2026-08-26T12:00:00.000Z";
+
+async function countLocalZipEntries(bytes: Uint8Array): Promise<number> {
+  const parser = unzipper.Parse({ forceStream: true });
+  Readable.from([Buffer.from(bytes)]).pipe(parser);
+  let count = 0;
+  for await (const value of parser) {
+    count += 1;
+    for await (const chunk of value as unzipper.Entry) {
+      // Consume sequentially so Parse can reach every following local header.
+      void chunk;
+    }
+  }
+  return count;
+}
+
+const profiles = [
+  {
+    profile: "ipc-2017-official-g1" as const,
+    source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+    labels: [
+      "Produits alimentaires et boissons non alcoolisées",
+      "Boissons alcoolisées, tabac et stupéfiants",
+      "Articles d'habillement et chaussures",
+      "Logement, eau, gaz, électricité et autres combustibles",
+      "Meubles, articles de ménage et entretien courant du foyer",
+      "Santé",
+    ],
+    keys: [
+      "hcp.ipc2017.01",
+      "hcp.ipc2017.02",
+      "hcp.ipc2017.03",
+      "hcp.ipc2017.04",
+      "hcp.ipc2017.05",
+      "hcp.ipc2017.06",
+    ],
+    baseYear: 2017,
+  },
+  {
+    profile: "ipc-2017-official-g2" as const,
+    source: HCP_IPC_2017_OFFICIAL_G2_SOURCE,
+    labels: [
+      "Transports",
+      "Communications",
+      "Loisirs et culture",
+      "Enseignement",
+      "Restaurants et hôtels",
+      "Biens et services divers",
+    ],
+    keys: [
+      "hcp.ipc2017.07",
+      "hcp.ipc2017.08",
+      "hcp.ipc2017.09",
+      "hcp.ipc2017.10",
+      "hcp.ipc2017.11",
+      "hcp.ipc2017.12",
+    ],
+    baseYear: 2017,
+  },
+  {
+    profile: "ippi-2018-official-g1" as const,
+    source: HCP_IPPI_2018_OFFICIAL_G1_SOURCE,
+    labels: [
+      "Industries alimentaires",
+      "Fabrication de Boissons",
+      "Fabrication de produits à base de tabac",
+      "Fabrication de textiles",
+      "Industrie d'habillement",
+      "Industrie de cuir et de la chaussure",
+      "Travail du bois et fabrication d'articles en bois",
+      "Industrie du papier et du carton",
+    ],
+    keys: [
+      "hcp.ipp2018.industries-alimentaires",
+      "hcp.ipp2018.fabrication-de-boissons",
+      "hcp.ipp2018.fabrication-de-produits-a-base-de-tabac",
+      "hcp.ipp2018.fabrication-de-textiles",
+      "hcp.ipp2018.industrie-d-habillement",
+      "hcp.ipp2018.industrie-de-cuir-et-de-la-chaussure",
+      "hcp.ipp2018.travail-du-bois-et-fabrication-d-articles-en-bois",
+      "hcp.ipp2018.industrie-du-papier-et-du-carton",
+    ],
+    baseYear: 2018,
+  },
+  {
+    profile: "ippi-2018-official-g2" as const,
+    source: HCP_IPPI_2018_OFFICIAL_G2_SOURCE,
+    labels: [
+      "Imprimerie et reproduction d’enregistrement",
+      "Cokéfaction et raffinage",
+      "Industrie chimique",
+      "Industrie pharmaceutique",
+      "Fabrication de produits en caoutchouc et en plastique",
+      "Fabrication d'autres produits minéraux non métalliques",
+      "Métallurgie",
+    ],
+    keys: [
+      "hcp.ipp2018.imprimerie-et-reproduction-d-enregistrement",
+      "hcp.ipp2018.cokefaction-et-raffinage",
+      "hcp.ipp2018.industrie-chimique",
+      "hcp.ipp2018.industrie-pharmaceutique",
+      "hcp.ipp2018.fabrication-de-produits-en-caoutchouc-et-en-plastique",
+      "hcp.ipp2018.fabrication-d-autres-produits-mineraux-non-metalliques",
+      "hcp.ipp2018.metallurgie",
+    ],
+    baseYear: 2018,
+  },
+  {
+    profile: "ippi-2018-official-g3" as const,
+    source: HCP_IPPI_2018_OFFICIAL_G3_SOURCE,
+    labels: [
+      "Fabrication de produits métalliques",
+      "Fabrication de produits informatique",
+      "Fabrication d’équipements électriques",
+      "Fabrication de machines et équipements n.c.a",
+      "Industrie automobile",
+      "Fabrication d'autres matériels de transport",
+      "fabrication de meubles",
+      "Autres industries manufacturés",
+    ],
+    keys: [
+      "hcp.ipp2018.fabrication-de-produits-metalliques",
+      "hcp.ipp2018.fabrication-de-produits-informatique",
+      "hcp.ipp2018.fabrication-d-equipements-electriques",
+      "hcp.ipp2018.fabrication-de-machines-et-equipements-n-c-a",
+      "hcp.ipp2018.industrie-automobile",
+      "hcp.ipp2018.fabrication-d-autres-materiels-de-transport",
+      "hcp.ipp2018.fabrication-de-meubles",
+      "hcp.ipp2018.autres-industries-manufactures",
+    ],
+    baseYear: 2018,
+  },
+] as const;
+
+type OfficialSource = (typeof profiles)[number]["source"];
+
+function artifactFor(source: OfficialSource) {
+  return rawArtifactFactory({
+    source_id: source.source_id,
+    parser_kind: source.parser.kind,
+    parser_profile: source.parser.profile,
+  });
+}
+
+async function fixtureFor(
+  profile: HcpOfficialIpcProfile | HcpOfficialIppiProfile,
+  options: Parameters<typeof createHcpOfficialIpcFixture>[1] = {},
+) {
+  return profile.startsWith("ipc-")
+    ? createHcpOfficialIpcFixture(profile as HcpOfficialIpcProfile, options)
+    : createHcpOfficialIppiFixture(profile as HcpOfficialIppiProfile, options);
+}
+
+async function parseProfile(
+  entry: (typeof profiles)[number],
+  options: Parameters<typeof createHcpOfficialIpcFixture>[1] = {},
+) {
+  return parseHcpOfficialIndicatorWorkbook({
+    source: entry.source,
+    artifact: artifactFor(entry.source),
+    bytes: await fixtureFor(entry.profile, options),
+    retrievedAt: RETRIEVED_AT,
+  });
+}
+
+for (const entry of profiles) {
+  void test(`parses the fixed ${entry.profile} label profile`, async () => {
+    const parsed = await parseProfile(entry);
+    assert.deepEqual(parsed.parser_errors, []);
+    assert.equal(parsed.base_year, entry.baseYear);
+    assert.deepEqual(parsed.observed_labels, entry.labels);
+    assert.deepEqual(
+      [...new Set(parsed.observations.map((row) => row.series_key))].sort(),
+      [...entry.keys].sort(),
+    );
+    assert.equal(
+      parsed.observations.length,
+      entry.labels.length * 2 - (entry.profile === "ippi-2018-official-g2" ? 1 : 0),
+    );
+    assert.equal(
+      parsed.observations.every(
+        (row) =>
+          row.location_key === "ma" &&
+          row.geography_type === "country" &&
+          row.frequency === "monthly" &&
+          row.unit === "index" &&
+          row.currency === null &&
+          row.scaling_factor === "1" &&
+          row.scalar_reproducible,
+      ),
+      true,
+    );
+  });
+}
+
+void test("normalizes IPC string periods, decimals and cell provenance", async () => {
+  const parsed = await parseProfile(profiles[0]);
+  assert.deepEqual(parsed.observations[0], {
+    schema_version: "1.0.0",
+    natural_key: "hcp.ipc2017.01|ma|2026-07",
+    series_key: "hcp.ipc2017.01",
+    source_series_label: "Produits alimentaires et boissons non alcoolisées",
+    period_start: "2026-07-01",
+    period_end: "2026-07-31",
+    frequency: "monthly",
+    value: "100.5",
+    unit: "index",
+    currency: null,
+    scaling_factor: "1",
+    geography_type: "country",
+    location_key: "ma",
+    source_id: HCP_IPC_2017_OFFICIAL_G1_SOURCE.source_id,
+    artifact_sha256: "a".repeat(64),
+    source_row: 25,
+    source_column: 3,
+    retrieved_at: RETRIEVED_AT,
+    source_published_at: null,
+    scalar_reproducible: true,
+  });
+  assert.equal(parsed.observations.at(-1)?.period_start, "2026-08-01");
+  assert.equal(parsed.observations.at(-1)?.period_end, "2026-08-31");
+});
+
+void test("normalizes mixed IPPI Excel dates and strict strings", async () => {
+  const parsed = await parseProfile(profiles[3]);
+  const firstObservation = parsed.observations[0];
+  assert.ok(firstObservation);
+  assert.equal(firstObservation.source_row, 23);
+  assert.equal(firstObservation.source_column, 3);
+  assert.equal(firstObservation.period_start, "2026-07-01");
+  assert.equal(parsed.observations.at(-1)?.period_start, "2026-06-01");
+  assert.equal(
+    parsed.observations.some(
+      (row) =>
+        row.series_key === "hcp.ipp2018.cokefaction-et-raffinage" &&
+        row.period_start === "2026-07-01",
+    ),
+    false,
+  );
+  assert.equal(
+    parsed.observations.some(
+      (row) => row.series_key === "hcp.ipp2018.cokefaction-et-raffinage",
+    ),
+    true,
+  );
+});
+
+void test("fails closed when one published value cell is blank", async () => {
+  const parsed = await parseProfile(profiles[0], { blankFirstValue: true });
+
+  assert.equal(parsed.parser_errors.includes("unexpected_value:25:3"), true);
+});
+
+void test("fails closed when the official footer is absent", async () => {
+  const parsed = await parseProfile(profiles[0], { omitFooter: true });
+
+  assert.equal(parsed.parser_errors.includes("missing_footer"), true);
+});
+
+void test("accepts supplier layout padding around the exact official footer", async () => {
+  const parsed = await parseProfile(profiles[0], { paddedFooter: true });
+
+  assert.deepEqual(parsed.parser_errors, []);
+  assert.equal(parsed.observations.length > 0, true);
+});
+
+void test("rejects a padded label instead of normalizing published provenance", async () => {
+  const parsed = await parseProfile(profiles[1], { paddedLabel: true });
+  assert.equal(
+    parsed.parser_errors.some((error) => error.startsWith("unknown_label:")),
+    true,
+  );
+  assert.deepEqual(parsed.observations, []);
+});
+
+void test("rejects surrounding whitespace in a strict YYYY/MM period", async () => {
+  const parsed = await parseProfile(profiles[0], { periods: [" 2026/07 "] });
+  assert.equal(parsed.parser_errors.includes("invalid_period:25"), true);
+  assert.deepEqual(parsed.observations, []);
+});
+
+void test("rejects an appended business column after the fixed profile boundary", async () => {
+  const parsed = await parseProfile(profiles[0], { appendedBusinessColumn: true });
+  assert.equal(
+    parsed.parser_errors.some((error) => error.startsWith("unexpected_appended_cell:")),
+    true,
+  );
+  assert.deepEqual(parsed.observations, []);
+});
+
+void test("rejects a changed date header in the fixed official layout", async () => {
+  const parsed = await parseProfile(profiles[0], { dateHeader: "Période" });
+  assert.equal(parsed.parser_errors.includes("invalid_header:date"), true);
+  assert.deepEqual(parsed.observations, []);
+});
+
+void test("rejects reordered labels even when the exact label set is unchanged", async () => {
+  const parsed = await parseProfile(profiles[0], { reorderedLabels: true });
+  assert.equal(
+    parsed.parser_errors.some((error) => error.startsWith("label_position_mismatch:")),
+    true,
+  );
+  assert.deepEqual(parsed.observations, []);
+});
+
+void test("rejects one sparse appended cell without dense row access", async (t) => {
+  const sparseRow = 20_000;
+  const bytes = await createHcpOfficialIpcFixture("ipc-2017-official-g1", {
+    sparseAppendedBusinessRow: sparseRow,
+  });
+  const probeWorkbook = new ExcelJS.Workbook();
+  const worksheetPrototype = Object.getPrototypeOf(
+    probeWorkbook.addWorksheet("Probe"),
+  ) as { getRow: (rowNumber: number) => ExcelJS.Row };
+  const originalGetRow = worksheetPrototype.getRow;
+  const getRow = t.mock.method(
+    worksheetPrototype,
+    "getRow",
+    function (this: ExcelJS.Worksheet, rowNumber: number) {
+      return originalGetRow.call(this, rowNumber);
+    },
+  );
+
+  const parsed = await parseHcpOfficialIndicatorWorkbook({
+    source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+    artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+    bytes,
+    retrievedAt: RETRIEVED_AT,
+  });
+
+  assert.deepEqual(
+    parsed.parser_errors.filter((error) =>
+      error.startsWith("unexpected_appended_cell:"),
+    ),
+    [`unexpected_appended_cell:${String(sparseRow)}:9`],
+  );
+  assert.deepEqual(parsed.observations, []);
+  assert.equal(getRow.mock.callCount() < 100, true);
+});
+
+void test("accepts a sparse styled empty cell without dense row access", async (t) => {
+  const bytes = await createHcpOfficialIpcFixture("ipc-2017-official-g1", {
+    sparseStyledEmptyRow: 20_000,
+  });
+  const probeWorkbook = new ExcelJS.Workbook();
+  const worksheetPrototype = Object.getPrototypeOf(
+    probeWorkbook.addWorksheet("Probe"),
+  ) as { getRow: (rowNumber: number) => ExcelJS.Row };
+  const originalGetRow = worksheetPrototype.getRow;
+  const getRow = t.mock.method(
+    worksheetPrototype,
+    "getRow",
+    function (this: ExcelJS.Worksheet, rowNumber: number) {
+      return originalGetRow.call(this, rowNumber);
+    },
+  );
+
+  const parsed = await parseHcpOfficialIndicatorWorkbook({
+    source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+    artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+    bytes,
+    retrievedAt: RETRIEVED_AT,
+  });
+
+  assert.deepEqual(parsed.parser_errors, []);
+  assert.equal(parsed.observations.length, 12);
+  assert.equal(getRow.mock.callCount() < 100, true);
+});
+
+const invalidCases = [
+  ["shifted header", { headerRowOffset: 1 }, "invalid_header"],
+  ["duplicate label", { duplicateLabel: true }, "duplicate_label"],
+  ["unknown label", { unknownLabel: true }, "unknown_label"],
+  ["future month", { periods: ["2026/09"] }, "future_period"],
+  ["invalid month", { periods: ["2026/13"] }, "invalid_period"],
+  ["unexpected string", { unexpectedString: true }, "unexpected_value"],
+  ["empty observations", { emptyValues: true }, "empty_observations"],
+] as const;
+
+for (const [name, options, expectedError] of invalidCases) {
+  void test(`fails closed for ${name}`, async () => {
+    const parsed = await parseProfile(profiles[0], options);
+    assert.equal(
+      parsed.parser_errors.some((error) => error.startsWith(expectedError)),
+      true,
+    );
+  });
+}
+
+void test("fails closed for a profile/workbook mismatch", async () => {
+  const parsed = await parseHcpOfficialIndicatorWorkbook({
+    source: HCP_IPC_2017_OFFICIAL_G2_SOURCE,
+    artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G2_SOURCE),
+    bytes: await createHcpOfficialIpcFixture("ipc-2017-official-g1"),
+    retrievedAt: RETRIEVED_AT,
+  });
+  assert.equal(parsed.parser_errors.length > 0, true);
+  assert.deepEqual(parsed.observations, []);
+});
+
+void test("fails closed for a non-official source and mismatched artifact metadata", async () => {
+  const legacy = await parseHcpOfficialIndicatorWorkbook({
+    source: HCP_IPC_2017_SOURCE,
+    artifact: rawArtifactFactory(),
+    bytes: await createHcpOfficialIpcFixture("ipc-2017-official-g1"),
+    retrievedAt: RETRIEVED_AT,
+  });
+  assert.equal(legacy.parser_errors.includes("invalid_parser_kind:hcp-index-workbook"), true);
+  assert.deepEqual(legacy.observations, []);
+
+  const mismatchedArtifact = await parseHcpOfficialIndicatorWorkbook({
+    source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+    artifact: rawArtifactFactory(),
+    bytes: await createHcpOfficialIpcFixture("ipc-2017-official-g1"),
+    retrievedAt: RETRIEVED_AT,
+  });
+  assert.equal(mismatchedArtifact.parser_errors.includes("artifact_source_mismatch"), true);
+  assert.equal(mismatchedArtifact.parser_errors.includes("artifact_parser_mismatch"), true);
+  assert.deepEqual(mismatchedArtifact.observations, []);
+});
+
+void test("rejects an official workbook above the byte limit before loading it", async () => {
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes: new Uint8Array(4 * 1024 * 1024 + 1),
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /workbook_too_large/,
+  );
+});
+
+void test("rejects an official XLSX with too many ZIP entries before loading it", async () => {
+  const bytes = await createWorkbookWithManyZipEntries();
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_too_many_entries/,
+  );
+});
+
+void test("rejects an official XLSX ZIP bomb before loading it", async () => {
+  const bytes = await createWorkbookWithLargeZipExpansion();
+  assert.equal(bytes.byteLength < 4 * 1024 * 1024, true);
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
+});
+
+void test("rejects forged ZIP size metadata from both parsers before ExcelJS load", async (t) => {
+  const actual = await createWorkbookWithLargeZipExpansion();
+  const forged = forgeZipDeclaredUncompressedSizes(actual);
+  const workbook = new ExcelJS.Workbook();
+  const xlsxPrototype = Object.getPrototypeOf(workbook.xlsx) as {
+    load: (...args: unknown[]) => Promise<unknown>;
+  };
+  const load = t.mock.method(xlsxPrototype, "load", () =>
+    Promise.reject(new Error("exceljs_load_called")),
+  );
+
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
+  await assert.rejects(
+    () =>
+      parseHcpIndexWorkbook({
+        source: HCP_IPC_2017_SOURCE,
+        artifact: rawArtifactFactory(),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
+  assert.equal(load.mock.callCount(), 0);
+});
+
+void test("rejects an EOCD-hidden ZIP bomb from both parsers before ExcelJS load", async (t) => {
+  const actual = await createWorkbookWithLargeZipExpansion();
+  const forged = forgeZipEndOfCentralDirectoryEntryCounts(actual);
+  const forgedBuffer = Buffer.from(forged);
+  const eocdOffset = forgedBuffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  assert.notEqual(eocdOffset, -1);
+  assert.equal(forgedBuffer.readUInt16LE(eocdOffset + 10), 1);
+  assert.equal(await countLocalZipEntries(forged), 16);
+  const workbook = new ExcelJS.Workbook();
+  const xlsxPrototype = Object.getPrototypeOf(workbook.xlsx) as {
+    load: (...args: unknown[]) => Promise<unknown>;
+  };
+  const load = t.mock.method(xlsxPrototype, "load", () =>
+    Promise.reject(new Error("exceljs_load_called")),
+  );
+
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
+  await assert.rejects(
+    () =>
+      parseHcpIndexWorkbook({
+        source: HCP_IPC_2017_SOURCE,
+        artifact: rawArtifactFactory(),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_uncompressed_too_large/,
+  );
+  assert.equal(load.mock.callCount(), 0);
+});
+
+void test("counts local ZIP entries beyond forged EOCD counters", async (t) => {
+  const actual = await createWorkbookWithManyZipEntries();
+  const forged = forgeZipEndOfCentralDirectoryEntryCounts(actual);
+  const workbook = new ExcelJS.Workbook();
+  const xlsxPrototype = Object.getPrototypeOf(workbook.xlsx) as {
+    load: (...args: unknown[]) => Promise<unknown>;
+  };
+  const load = t.mock.method(xlsxPrototype, "load", () =>
+    Promise.reject(new Error("exceljs_load_called")),
+  );
+
+  await assert.rejects(
+    () =>
+      parseHcpOfficialIndicatorWorkbook({
+        source: HCP_IPC_2017_OFFICIAL_G1_SOURCE,
+        artifact: artifactFor(HCP_IPC_2017_OFFICIAL_G1_SOURCE),
+        bytes: forged,
+        retrievedAt: RETRIEVED_AT,
+      }),
+    /xlsx_too_many_entries/,
+  );
+  assert.equal(load.mock.callCount(), 0);
+});
