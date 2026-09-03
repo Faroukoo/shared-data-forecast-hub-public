@@ -12,6 +12,7 @@ import {
   SnapshotIndexSchema,
   type ConsumerPayload,
   type ConsumerV2Payload,
+  type ConsumerV3Payload,
   type SnapshotIndex,
 } from "@data-hub/contracts";
 import { writeConsumerBundle } from "@data-hub/adapters";
@@ -19,6 +20,7 @@ import { writeConsumerBundle } from "@data-hub/adapters";
 import { executeConsumerCommand } from "../apps/ingest-cli/src/consumer-command.js";
 import { main } from "../apps/ingest-cli/src/index.js";
 import { consumerV2PayloadFixture } from "./consumer-v2-fixture.js";
+import { consumerV3PayloadFixture } from "./consumer-v3-fixture.js";
 
 const SNAPSHOT_ID = `9d3b77bbfc0c${"a".repeat(52)}`;
 const SNAPSHOT_TAG = "data-20260827T095123Z-9d3b77bbfc0c";
@@ -118,6 +120,13 @@ function payloadV2(): ConsumerV2Payload {
   });
 }
 
+function payloadV3(): ConsumerV3Payload {
+  return consumerV3PayloadFixture({
+    snapshotId: SNAPSHOT_ID,
+    snapshotTag: SNAPSHOT_TAG,
+  });
+}
+
 async function snapshotIndexFile(t: TestContext): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "consumer-cli-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -182,6 +191,9 @@ void test("consumer create defaults to the v1 builder and forwards the authorita
       buildConsumerV2: () => {
         throw new Error("unexpected_v2_builder");
       },
+      buildConsumerV3: () => {
+        throw new Error("unexpected_v3_builder");
+      },
       writeBundle: (input) => {
         writeCalled = true;
         assert.equal(input.outputDir, "/release/consumer");
@@ -219,6 +231,9 @@ void test("consumer create selects the v2 builder only for exact v2", async (t) 
       buildConsumer: () => {
         throw new Error("unexpected_v1_builder");
       },
+      buildConsumerV3: () => {
+        throw new Error("unexpected_v3_builder");
+      },
       buildConsumerV2: (input) => {
         v2BuildCalled = true;
         assert.equal(input.dataDir, "/data/current");
@@ -249,8 +264,45 @@ void test("consumer create selects the v2 builder only for exact v2", async (t) 
   ]);
 });
 
-void test("consumer create rejects every contract version other than exact v1 or v2 without leaking it", async () => {
-  const secretVersion = "v2-/private/token-credential_secret";
+void test("consumer create selects the v3 builder only for exact v3", async (t) => {
+  const snapshotIndex = await snapshotIndexFile(t);
+  const consumerPayload = payloadV3();
+  let v3BuildCalled = false;
+
+  const result = await captureLogs(() =>
+    executeConsumerCommand(createArgs(snapshotIndex, "v3"), {
+      buildConsumer: () => { throw new Error("unexpected_v1_builder"); },
+      buildConsumerV2: () => { throw new Error("unexpected_v2_builder"); },
+      buildConsumerV3: (input) => {
+        v3BuildCalled = true;
+        assert.equal(input.dataDir, "/data/current");
+        assert.deepEqual(input.snapshot, snapshot());
+        assert.equal(input.sourceTag, SNAPSHOT_TAG);
+        return Promise.resolve(consumerPayload);
+      },
+      writeBundle: (input) => {
+        assert.equal(input.payload, consumerPayload);
+        return Promise.resolve({
+          index: {
+            source_snapshot_tag: SNAPSHOT_TAG,
+            payload: { sha256: PAYLOAD_DIGEST },
+          },
+        });
+      },
+    }),
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(v3BuildCalled, true);
+  assert.deepEqual(result.lines.map((line) => JSON.parse(line) as unknown), [{
+    event: "consumer_bundle_created",
+    source_tag: SNAPSHOT_TAG,
+    payload_digest: PAYLOAD_DIGEST,
+  }]);
+});
+
+void test("consumer create rejects every contract version other than exact v1, v2 or v3 before file reads without leaking it", async () => {
+  const secretVersion = "v3-/private/token-credential_secret";
   const result = await captureLogs(() =>
     executeConsumerCommand(createArgs("/private/snapshot-index.json", secretVersion)),
   );
@@ -341,6 +393,28 @@ void test("consumer verify accepts a self-describing v2 bundle", async (t) => {
       payload_digest: created.index.payload.sha256,
     },
   ]);
+});
+
+void test("consumer verify accepts a self-describing v3 bundle", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "consumer-cli-v3-verify-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const created = await writeConsumerBundle({
+    outputDir: join(root, "bundle"),
+    payload: payloadV3(),
+    codeSha: CODE_SHA,
+  });
+  const result = await captureLogs(() => executeConsumerCommand([
+    "verify",
+    "--index", created.indexPath,
+    "--payload", created.payloadPath,
+    "--checksum", created.checksumPath,
+  ]));
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(result.lines.map((line) => JSON.parse(line) as unknown), [{
+    event: "consumer_bundle_verified",
+    source_tag: SNAPSHOT_TAG,
+    payload_digest: created.index.payload.sha256,
+  }]);
 });
 
 void test("consumer create refuses a v2 payload whose source tag differs from the request", async (t) => {

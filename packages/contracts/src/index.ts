@@ -72,3 +72,18 @@ export {
   type ConsumerV2Source,
   type ConsumerV2Tuple,
 } from "./consumer-v2.js";
+export {
+  CONSUMER_V3_CONTRACT,
+  CONSUMER_V3_MAX_INDEX_VALUE,
+  CONSUMER_V3_PROFILE,
+  CONSUMER_V3_TUPLES,
+  ConsumerV3IndexSchema,
+  ConsumerV3ObservationSchema,
+  ConsumerV3PayloadSchema,
+  ConsumerV3SourceSchema,
+  type ConsumerV3Index,
+  type ConsumerV3Observation,
+  type ConsumerV3Payload,
+  type ConsumerV3Source,
+  type ConsumerV3Tuple,
+} from "./consumer-v3.js";

@@ -15,14 +15,19 @@ import { canonicalJson, sha256Hex } from "@data-hub/canonical";
 import {
   CONSUMER_CONTRACT,
   CONSUMER_V2_CONTRACT,
+  CONSUMER_V3_CONTRACT,
   ConsumerIndexSchema,
   ConsumerPayloadSchema,
   ConsumerV2IndexSchema,
   ConsumerV2PayloadSchema,
+  ConsumerV3IndexSchema,
+  ConsumerV3PayloadSchema,
   type ConsumerIndex,
   type ConsumerPayload,
   type ConsumerV2Index,
   type ConsumerV2Payload,
+  type ConsumerV3Index,
+  type ConsumerV3Payload,
 } from "@data-hub/contracts";
 
 const INDEX_NAME = "consumer-index.json";
@@ -39,12 +44,24 @@ const BUNDLE_SPEC = {
     indexSchema: ConsumerV2IndexSchema,
     payloadSchema: ConsumerV2PayloadSchema,
   },
+  [CONSUMER_V3_CONTRACT]: {
+    payloadName: "consumer-v3.json",
+    checksumName: "consumer-v3.json.sha256",
+    indexSchema: ConsumerV3IndexSchema,
+    payloadSchema: ConsumerV3PayloadSchema,
+  },
 } as const;
 
 type SupportedConsumerContract = keyof typeof BUNDLE_SPEC;
 type BundleSpec = (typeof BUNDLE_SPEC)[SupportedConsumerContract];
-export type SupportedConsumerPayload = ConsumerPayload | ConsumerV2Payload;
-export type SupportedConsumerIndex = ConsumerIndex | ConsumerV2Index;
+export type SupportedConsumerPayload =
+  | ConsumerPayload
+  | ConsumerV2Payload
+  | ConsumerV3Payload;
+export type SupportedConsumerIndex =
+  | ConsumerIndex
+  | ConsumerV2Index
+  | ConsumerV3Index;
 
 export interface WriteConsumerBundleInput {
   outputDir: string;
@@ -89,7 +106,11 @@ function sameStrings(left: string[], right: string[]): boolean {
 }
 
 function bundleSpecForContract(contract: unknown): BundleSpec {
-  if (contract !== CONSUMER_CONTRACT && contract !== CONSUMER_V2_CONTRACT) {
+  if (
+    contract !== CONSUMER_CONTRACT &&
+    contract !== CONSUMER_V2_CONTRACT &&
+    contract !== CONSUMER_V3_CONTRACT
+  ) {
     throw new Error("unsupported_consumer_contract");
   }
   return BUNDLE_SPEC[contract];

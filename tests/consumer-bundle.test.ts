@@ -19,11 +19,14 @@ import {
   CONSUMER_CONTRACT,
   CONSUMER_PROFILE,
   CONSUMER_V2_CONTRACT,
+  CONSUMER_V3_CONTRACT,
   ConsumerPayloadSchema,
   SCHEMA_VERSION,
   type ConsumerPayload,
   type ConsumerV2Index,
   type ConsumerV2Payload,
+  type ConsumerV3Index,
+  type ConsumerV3Payload,
 } from "@data-hub/contracts";
 import {
   verifyConsumerBundle,
@@ -35,6 +38,7 @@ import {
   compareConsumerV2FixtureObservations,
   consumerV2PayloadFixture,
 } from "./consumer-v2-fixture.js";
+import { consumerV3PayloadFixture } from "./consumer-v3-fixture.js";
 
 const SNAPSHOT_ID = "9d3b77bbfc0cf05cbc0f2e27f24cfb0b348ce0e5d71b09267fbd7ce67657e226";
 const SNAPSHOT_TAG = "data-20260827T095123Z-9d3b77bbfc0c";
@@ -119,6 +123,13 @@ function payloadV2(): ConsumerV2Payload {
   });
 }
 
+function payloadV3(): ConsumerV3Payload {
+  return consumerV3PayloadFixture({
+    snapshotId: SNAPSHOT_ID,
+    snapshotTag: SNAPSHOT_TAG,
+  });
+}
+
 async function createBundle(t: TestContext): Promise<{
   root: string;
   outputDir: string;
@@ -146,6 +157,22 @@ async function createV2Bundle(t: TestContext): Promise<{
   const created = await writeConsumerBundle({
     outputDir,
     payload: payloadV2(),
+    codeSha: CODE_SHA,
+  });
+  return { root, outputDir, created };
+}
+
+async function createV3Bundle(t: TestContext): Promise<{
+  root: string;
+  outputDir: string;
+  created: CreatedConsumerBundle;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "consumer-v3-bundle-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const outputDir = join(root, "bundle");
+  const created = await writeConsumerBundle({
+    outputDir,
+    payload: payloadV3(),
     codeSha: CODE_SHA,
   });
   return { root, outputDir, created };
@@ -202,6 +229,40 @@ async function rewriteSignedV2Bundle(input: {
     writeFile(
       input.created.checksumPath,
       `${payloadSha256}  consumer-v2.json\n`,
+    ),
+  ]);
+}
+
+async function rewriteSignedV3Bundle(input: {
+  created: CreatedConsumerBundle;
+  mutatePayload: (payload: ConsumerV3Payload) => ConsumerV3Payload;
+}): Promise<void> {
+  const originalPayload = JSON.parse(
+    await readFile(input.created.payloadPath, "utf8"),
+  ) as ConsumerV3Payload;
+  const mutatedPayload = input.mutatePayload(originalPayload);
+  const payloadBytes = Buffer.from(`${canonicalJson(mutatedPayload)}\n`);
+  const payloadSha256 = sha256Hex(payloadBytes);
+  const originalIndex = input.created.index as ConsumerV3Index;
+  const index = {
+    ...originalIndex,
+    coverage_start: mutatedPayload.coverage_start,
+    coverage_end: mutatedPayload.coverage_end,
+    source_ids: mutatedPayload.sources.map((source) => source.source_id),
+    indicator_count: new Set(mutatedPayload.observations.map((row) => row.series_key)).size,
+    observation_count: mutatedPayload.observations.length,
+    payload: {
+      ...originalIndex.payload,
+      byte_length: payloadBytes.byteLength,
+      sha256: payloadSha256,
+    },
+  };
+  await Promise.all([
+    writeFile(input.created.payloadPath, payloadBytes),
+    writeFile(input.created.indexPath, `${canonicalJson(index)}\n`),
+    writeFile(
+      input.created.checksumPath,
+      `${payloadSha256}  consumer-v3.json\n`,
     ),
   ]);
 }
@@ -274,6 +335,59 @@ void test("writes and verifies exactly three canonical v2 consumer assets", asyn
   assert.deepEqual(
     await verifyConsumerBundle(verificationInput(created)),
     created.index,
+  );
+});
+
+void test("writes and verifies exactly three canonical v3 consumer assets", async (t) => {
+  const { outputDir, created } = await createV3Bundle(t);
+  const payloadBytes = `${canonicalJson(payloadV3())}\n`;
+  const payloadSha256 = sha256Hex(payloadBytes);
+
+  assert.deepEqual((await readdir(outputDir)).sort(), [
+    "consumer-index.json",
+    "consumer-v3.json",
+    "consumer-v3.json.sha256",
+  ]);
+  assert.equal(created.index.consumer_contract, CONSUMER_V3_CONTRACT);
+  assert.equal(created.index.payload.name, "consumer-v3.json");
+  assert.equal(created.index.payload.byte_length, Buffer.byteLength(payloadBytes));
+  assert.equal(created.index.payload.sha256, payloadSha256);
+  assert.equal(await readFile(created.payloadPath, "utf8"), payloadBytes);
+  assert.equal(
+    await readFile(created.checksumPath, "utf8"),
+    `${payloadSha256}  consumer-v3.json\n`,
+  );
+  assert.deepEqual(await verifyConsumerBundle(verificationInput(created)), created.index);
+});
+
+void test("v3 verifier rejects self-consistent signed matrix mutations", async (t) => {
+  const missing = await createV3Bundle(t);
+  await rewriteSignedV3Bundle({
+    created: missing.created,
+    mutatePayload: (value) => ({
+      ...value,
+      observations: value.observations.slice(1),
+      coverage_start: value.observations[1]?.period_start ?? value.coverage_start,
+    }),
+  });
+  await assert.rejects(
+    () => verifyConsumerBundle(verificationInput(missing.created)),
+    /invalid_consumer_index|invalid_consumer_payload/,
+  );
+
+  const city = await createV3Bundle(t);
+  await rewriteSignedV3Bundle({
+    created: city.created,
+    mutatePayload: (value) => ({
+      ...value,
+      observations: value.observations.map((row, index) =>
+        index === 0 ? { ...row, location_key: "ma:city:casablanca" as "ma" } : row,
+      ),
+    }),
+  });
+  await assert.rejects(
+    () => verifyConsumerBundle(verificationInput(city.created)),
+    /invalid_consumer_payload/,
   );
 });
 

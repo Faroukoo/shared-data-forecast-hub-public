@@ -75,6 +75,12 @@ const EXPECTED_CONTRACT_CASE = [
   '    consumer_tag_prefix="consumer-v2"',
   "    consumer_tag_pattern='^consumer-v2-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'",
   "    ;;",
+  "  v3)",
+  '    payload_name="consumer-v3.json"',
+  '    checksum_name="consumer-v3.json.sha256"',
+  '    consumer_tag_prefix="consumer-v3"',
+  "    consumer_tag_pattern='^consumer-v3-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'",
+  "    ;;",
   "  *)",
   '    echo "unsupported consumer contract version" >&2',
   "    exit 4",
@@ -273,6 +279,10 @@ function assertHardenedConsumerReleasePolicy(
   assertClosedContractCase(publishRun, "publish");
 
   const publishLines = publishRun.split("\n");
+  const candidateGuard = publishLines.filter(
+    (line) => line.trim() === 'if [[ "$contract_version" =~ ^v[23]$ ]] && [ "$operation" != "manual" ]; then',
+  );
+  assert.equal(candidateGuard.length, 1, "one v2/v3 candidate-only guard");
   const apiWrites = logicalGhApiCommands(publishRun).filter(
     (command) => command.method !== "GET",
   );
@@ -456,7 +466,7 @@ void test("consumer releases run only from explicit dispatch or trusted refresh 
   );
   const contractVersion = record(inputs.contract_version, "contract_version");
   assert.equal(contractVersion.type, "choice");
-  assert.deepEqual(contractVersion.options, ["v1", "v2"]);
+  assert.deepEqual(contractVersion.options, ["v1", "v2", "v3"]);
   assert.equal(contractVersion.default, "v1");
   assert.equal(contractVersion.required, true);
 
@@ -593,6 +603,10 @@ void test("consumer jobs derive their contract assets from a closed version choi
       jobCommands,
       /v2\)[\s\S]*payload_name="consumer-v2\.json"[\s\S]*checksum_name="consumer-v2\.json\.sha256"[\s\S]*consumer_tag_prefix="consumer-v2"/,
     );
+    assert.match(
+      jobCommands,
+      /v3\)[\s\S]*payload_name="consumer-v3\.json"[\s\S]*checksum_name="consumer-v3\.json\.sha256"[\s\S]*consumer_tag_prefix="consumer-v3"/,
+    );
     assert.match(jobCommands, /\*\)[\s\S]*exit 4/);
     assert.match(jobCommands, /--contract-version "\$contract_version"/);
     assert.match(jobCommands, /--payload "\$bundle_dir\/\$payload_name"/);
@@ -606,7 +620,7 @@ void test("consumer jobs derive their contract assets from a closed version choi
   }
 });
 
-void test("consumer v2 is manual candidate-only while automatic stable publication remains v1", async () => {
+void test("consumer v2 and v3 are manual candidate-only while automatic stable publication remains v1", async () => {
   const workflow = await loadWorkflow(CONSUMER_PATH);
   const publishJob = record(jobs(workflow).publish, "publish");
   const publishEnvironment = record(
@@ -629,7 +643,7 @@ void test("consumer v2 is manual candidate-only while automatic stable publicati
   );
   assert.match(
     publishCommands,
-    /\[ "\$contract_version" = "v2" \] && \[ "\$operation" != "manual" \]/,
+    /\[\[ "\$contract_version" =~ \^v\[23\]\$ \]\] && \[ "\$operation" != "manual" \]/,
   );
   assert.match(
     publishCommands,
@@ -685,8 +699,24 @@ void test("consumer release policy rejects mutations of every guarded write inva
       apply: (value) => mutateFirst(value, "              consumer_tag_pattern='^consumer-v2-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'", "              consumer_tag_pattern='^consumer-v1-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'"),
     },
     {
+      name: "v3 payload assignment changes",
+      apply: (value) => mutateFirst(value, '              payload_name="consumer-v3.json"', '              payload_name="consumer-v2.json"'),
+    },
+    {
+      name: "v3 checksum assignment changes",
+      apply: (value) => mutateFirst(value, '              checksum_name="consumer-v3.json.sha256"', '              checksum_name="consumer-v2.json.sha256"'),
+    },
+    {
+      name: "v3 tag prefix changes",
+      apply: (value) => mutateFirst(value, '              consumer_tag_prefix="consumer-v3"', '              consumer_tag_prefix="consumer-v2"'),
+    },
+    {
+      name: "v3 tag regex changes",
+      apply: (value) => mutateFirst(value, "              consumer_tag_pattern='^consumer-v3-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'", "              consumer_tag_pattern='^consumer-v2-\\d{8}T\\d{6}Z-[a-f0-9]{12}$'"),
+    },
+    {
       name: "an extra accepted version arm is inserted",
-      apply: (value) => mutateFirst(value, "            *)\n", "            v3)\n              payload_name=consumer-v3.json\n              ;;\n            *)\n"),
+      apply: (value) => mutateFirst(value, "            *)\n", "            v4)\n              payload_name=consumer-v4.json\n              ;;\n            *)\n"),
     },
     {
       name: "the verify case runs after GitHub access",
@@ -713,7 +743,7 @@ void test("consumer release policy rejects mutations of every guarded write inva
     },
     {
       name: "the publish case accepts an extra version arm",
-      apply: (value) => mutateNth(value, "            *)\n", "            v3)\n              payload_name=consumer-v3.json\n              ;;\n            *)\n", 1),
+      apply: (value) => mutateNth(value, "            *)\n", "            v4)\n              payload_name=consumer-v4.json\n              ;;\n            *)\n", 1),
     },
     {
       name: "the publish case runs after GitHub access",
@@ -775,6 +805,10 @@ void test("consumer release policy rejects mutations of every guarded write inva
       apply: (value) => mutateFirst(value, "            release_flags+=(--prerelease)\n", ""),
     },
     {
+      name: "v2 and v3 candidate-only guard is removed",
+      apply: (value) => mutateFirst(value, '          if [[ "$contract_version" =~ ^v[23]$ ]] && [ "$operation" != "manual" ]; then\n', ""),
+    },
+    {
       name: "release flags are cleared before creation",
       apply: (value) => mutateFirst(value, '          gh release create "$consumer_tag" \\\n', '          release_flags=()\n          gh release create "$consumer_tag" \\\n'),
     },
@@ -805,6 +839,8 @@ void test("consumer publication is immutable, bounded to three assets and candid
   assert.match(publishCommands, /consumer-index\.json/);
   assert.match(publishCommands, /consumer-v1\.json/);
   assert.match(publishCommands, /consumer-v1\.json\.sha256/);
+  assert.match(publishCommands, /consumer-v3\.json/);
+  assert.match(publishCommands, /consumer-v3\.json\.sha256/);
   assert.match(publishCommands, /unexpected_consumer_assets/);
   assert.match(publishCommands, /consumer-v1-\\d\{8\}T\\d\{6\}Z-\[a-f0-9\]\{12\}/);
   assert.match(publishCommands, /existing stable release.*no_change/is);
