@@ -259,6 +259,7 @@ function assertHardenedConsumerReleasePolicy(
   assert.deepEqual(record(publishStep.env, "publish.env"), {
     GH_TOKEN: "${{ github.token }}",
     EVENT_NAME: "${{ github.event_name }}",
+    REQUESTED_MODE: "${{ inputs.mode }}",
     REQUESTED_SOURCE_TAG: "${{ inputs.source_release_tag }}",
     REQUESTED_CONTRACT_VERSION: "${{ inputs.contract_version }}",
     MANUAL_CODE_SHA: "${{ github.sha }}",
@@ -279,10 +280,52 @@ function assertHardenedConsumerReleasePolicy(
   assertClosedContractCase(publishRun, "publish");
 
   const publishLines = publishRun.split("\n");
-  const candidateGuard = publishLines.filter(
-    (line) => line.trim() === 'if [[ "$contract_version" =~ ^v[23]$ ]] && [ "$operation" != "manual" ]; then',
+  const trimmedPublishLines = publishLines.map((line) => line.trim());
+  const manualModeStart = trimmedPublishLines.indexOf(
+    'case "$REQUESTED_MODE" in',
   );
-  assert.equal(candidateGuard.length, 1, "one v2/v3 candidate-only guard");
+  assert.notEqual(manualModeStart, -1, "manual operation case");
+  const manualModeEnd = trimmedPublishLines.indexOf("esac", manualModeStart);
+  assert.deepEqual(
+    trimmedPublishLines.slice(manualModeStart, manualModeEnd + 1),
+    [
+      'case "$REQUESTED_MODE" in',
+      "publish-prerelease)",
+      'operation="manual_candidate"',
+      ";;",
+      "promote-stable)",
+      'test "$REQUESTED_CONTRACT_VERSION" = "v3"',
+      'operation="manual_promotion"',
+      ";;",
+      "*)",
+      'echo "unsupported manual consumer operation" >&2',
+      "exit 4",
+      ";;",
+      "esac",
+    ],
+    "closed manual operation case",
+  );
+  const operationCaseStarts = trimmedPublishLines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => line === 'case "$operation:$contract_version" in')
+    .map(({ index }) => index);
+  assert.equal(operationCaseStarts.length, 2, "two closed publication operation cases");
+  const publicationCaseStart = operationCaseStarts[0] as number;
+  const publicationCaseEnd = trimmedPublishLines.indexOf("esac", publicationCaseStart);
+  assert.deepEqual(
+    trimmedPublishLines.slice(publicationCaseStart, publicationCaseEnd + 1),
+    [
+      'case "$operation:$contract_version" in',
+      "manual_candidate:v1|manual_candidate:v2|manual_candidate:v3|manual_promotion:v3|automatic:v1)",
+      ";;",
+      "*)",
+      'echo "unsupported consumer publication operation" >&2',
+      "exit 4",
+      ";;",
+      "esac",
+    ],
+    "closed publication operation matrix",
+  );
   const apiWrites = logicalGhApiCommands(publishRun).filter(
     (command) => command.method !== "GET",
   );
@@ -300,14 +343,50 @@ function assertHardenedConsumerReleasePolicy(
     publishLines,
     'if [ "$existing_release_id" != "none" ]; then',
   );
-  const guardLines = existingReleaseBlock.lines
+  const v1GuardLines = existingReleaseBlock.lines
     .map((line) => line.trim())
     .filter((line) => line === 'test "$contract_version" = "v1"');
-  assert.equal(guardLines.length, 1, "one v1 guard in existing release block");
-  const guardIndex = existingReleaseBlock.lines.findIndex(
+  const v3GuardLines = existingReleaseBlock.lines
+    .map((line) => line.trim())
+    .filter((line) => line === 'test "$contract_version" = "v3"');
+  assert.equal(v1GuardLines.length, 1, "one automatic v1 guard in existing release block");
+  assert.equal(v3GuardLines.length, 1, "one manual v3 guard in existing release block");
+  const candidateStateLines = existingReleaseBlock.lines
+    .map((line) => line.trim())
+    .filter((line) => line === 'test "$existing_prerelease" = "true"');
+  assert.equal(candidateStateLines.length, 1, "one strict candidate-state precondition");
+  const v1GuardIndex = existingReleaseBlock.lines.findIndex(
     (line) => line.trim() === 'test "$contract_version" = "v1"',
   );
-  assert.ok(existingReleaseBlock.start + guardIndex < patchIndex, "v1 guard before PATCH");
+  const v3GuardIndex = existingReleaseBlock.lines.findIndex(
+    (line) => line.trim() === 'test "$contract_version" = "v3"',
+  );
+  const candidateStateIndex = existingReleaseBlock.lines.findIndex(
+    (line) => line.trim() === 'test "$existing_prerelease" = "true"',
+  );
+  assert.ok(existingReleaseBlock.start + v1GuardIndex < patchIndex, "v1 guard before PATCH");
+  assert.ok(existingReleaseBlock.start + v3GuardIndex < patchIndex, "v3 guard before PATCH");
+  assert.ok(
+    existingReleaseBlock.start + candidateStateIndex < patchIndex,
+    "candidate-state precondition before PATCH",
+  );
+  assert.equal(
+    publishLines.filter(
+      (line) =>
+        line.trim() ===
+        'if (typeof release.prerelease !== "boolean") process.exit(4);',
+    ).length,
+    1,
+    "release prerelease metadata must be boolean",
+  );
+  assert.ok(
+    existingReleaseBlock.lines.some(
+      (line) =>
+        line.trim() ===
+        'verify_consumer_release "$work_root/after-promotion.json" "$work_root/after-promotion-assets" "$work_root/after-promotion-assets.json"',
+    ),
+    "post-promotion release verification",
+  );
 
   const createMentions = publishLines
     .map((line, index) => ({ line: line.trim(), index }))
@@ -334,12 +413,33 @@ function assertHardenedConsumerReleasePolicy(
     .filter(({ line }) => line === "release_flags=()");
   assert.equal(releaseFlagInitializers.length, 1, "one release flag initializer");
   const releaseFlagsIndex = releaseFlagInitializers[0]?.index ?? -1;
+  const missingCandidateGuardStart = trimmedPublishLines.lastIndexOf(
+    'if [ "$operation" = "manual_promotion" ]; then',
+  );
+  assert.ok(
+    missingCandidateGuardStart > existingReleaseBlock.end &&
+      missingCandidateGuardStart < releaseFlagsIndex,
+    "missing-candidate guard before release creation",
+  );
+  assert.deepEqual(
+    trimmedPublishLines.slice(
+      missingCandidateGuardStart,
+      missingCandidateGuardStart + 4,
+    ),
+    [
+      'if [ "$operation" = "manual_promotion" ]; then',
+      'echo "verified v3 candidate required" >&2',
+      "exit 4",
+      "fi",
+    ],
+    "manual promotion cannot create a release",
+  );
   assert.deepEqual(
     publishLines.slice(releaseFlagsIndex, createIndex).map((line) => line.trim()),
     [
       "release_flags=()",
       'expected_prerelease="false"',
-      'if [ "$operation" = "manual" ]; then',
+      'if [ "$operation" = "manual_candidate" ]; then',
       "release_flags+=(--prerelease)",
       'expected_prerelease="true"',
       "fi",
@@ -458,6 +558,7 @@ void test("consumer releases run only from explicit dispatch or trusted refresh 
   assert.deepEqual(record(inputs.mode, "mode").options, [
     "verify",
     "publish-prerelease",
+    "promote-stable",
   ]);
   assert.equal(record(inputs.mode, "mode").required, true);
   assert.equal(
@@ -482,6 +583,7 @@ void test("consumer releases run only from explicit dispatch or trusted refresh 
     publishCondition,
     /github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/,
   );
+  assert.match(publishCondition, /inputs\.mode == 'promote-stable'/);
   assert.match(publishCondition, /workflow_run\.conclusion == 'success'/);
   assert.match(publishCondition, /workflow_run\.event == 'schedule'/);
   assert.match(
@@ -510,6 +612,40 @@ void test("consumer releases run only from explicit dispatch or trusted refresh 
     record(checkout?.with, "publish.checkout.with").ref,
     "${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}",
   );
+});
+
+void test("manual stable promotion is v3-only, candidate-required and re-verifies the unchanged release", async () => {
+  const workflow = await loadWorkflow(CONSUMER_PATH);
+  const publishJob = record(jobs(workflow).publish, "publish");
+  const publishStep = namedStep(
+    publishJob,
+    "Restore, verify and publish immutable consumer release",
+  );
+  const environment = record(publishStep.env, "publish.env");
+  assert.equal(environment.REQUESTED_MODE, "${{ inputs.mode }}");
+
+  const publishRun = stepRun(publishStep, "publish.run");
+  assert.match(
+    publishRun,
+    /case "\$REQUESTED_MODE" in[\s\S]*publish-prerelease\)[\s\S]*operation="manual_candidate"[\s\S]*promote-stable\)[\s\S]*test "\$REQUESTED_CONTRACT_VERSION" = "v3"[\s\S]*operation="manual_promotion"[\s\S]*\*\)[\s\S]*exit 4[\s\S]*esac/,
+  );
+  assert.match(
+    publishRun,
+    /if \[ "\$operation" = "manual_promotion" \]; then[\s\S]*echo "verified v3 candidate required" >&2[\s\S]*exit 4[\s\S]*fi[\s\S]*release_flags=\(\)/,
+  );
+  assert.match(
+    publishRun,
+    /verify_consumer_release "\$work_root\/after-promotion\.json" "\$work_root\/after-promotion-assets" "\$work_root\/after-promotion-assets\.json"/,
+  );
+  assert.match(
+    publishRun,
+    /test "\$contract_version" = "v3"[\s\S]*gh api --method PATCH/,
+  );
+  assert.match(
+    publishRun,
+    /typeof release\.prerelease !== "boolean"[\s\S]*test "\$existing_prerelease" = "true"[\s\S]*gh api --method PATCH/,
+  );
+  assert.doesNotMatch(publishRun, /gh release edit/);
 });
 
 void test("consumer verification is read-only and only its publisher can write contents", async () => {
@@ -620,7 +756,7 @@ void test("consumer jobs derive their contract assets from a closed version choi
   }
 });
 
-void test("consumer v2 and v3 are manual candidate-only while automatic stable publication remains v1", async () => {
+void test("consumer v2 stays candidate-only while v3 promotion is manual and automatic publication remains v1", async () => {
   const workflow = await loadWorkflow(CONSUMER_PATH);
   const publishJob = record(jobs(workflow).publish, "publish");
   const publishEnvironment = record(
@@ -635,7 +771,7 @@ void test("consumer v2 and v3 are manual candidate-only while automatic stable p
   const publishCommands = commands(publishJob);
   assert.match(
     publishCommands,
-    /operation="manual"[\s\S]*contract_version="\$REQUESTED_CONTRACT_VERSION"/,
+    /contract_version="\$REQUESTED_CONTRACT_VERSION"[\s\S]*publish-prerelease\)[\s\S]*operation="manual_candidate"[\s\S]*promote-stable\)[\s\S]*operation="manual_promotion"/,
   );
   assert.match(
     publishCommands,
@@ -643,16 +779,19 @@ void test("consumer v2 and v3 are manual candidate-only while automatic stable p
   );
   assert.match(
     publishCommands,
-    /\[\[ "\$contract_version" =~ \^v\[23\]\$ \]\] && \[ "\$operation" != "manual" \]/,
+    /manual_candidate:v1\|manual_candidate:v2\|manual_candidate:v3\|manual_promotion:v3\|automatic:v1/,
   );
   assert.match(
     publishCommands,
-    /if \[ "\$operation" = "manual" \]; then[\s\S]*release_flags\+=\(--prerelease\)/,
+    /if \[ "\$operation" = "manual_candidate" \]; then[\s\S]*release_flags\+=\(--prerelease\)/,
   );
-  const stableV1Guard = publishCommands.indexOf('test "$contract_version" = "v1"');
+  const stableV1Guard = publishCommands.lastIndexOf('test "$contract_version" = "v1"');
+  const stableV3Guard = publishCommands.lastIndexOf('test "$contract_version" = "v3"');
   const promotion = publishCommands.indexOf("gh api --method PATCH");
   assert.ok(stableV1Guard >= 0);
+  assert.ok(stableV3Guard >= 0);
   assert.ok(promotion > stableV1Guard);
+  assert.ok(promotion > stableV3Guard);
 });
 
 void test("consumer release policy rejects mutations of every guarded write invariant", async (t) => {
@@ -673,6 +812,10 @@ void test("consumer release policy rejects mutations of every guarded write inva
     {
       name: "publish contract input is no longer bound",
       apply: (value) => mutateFirst(value, "          REQUESTED_CONTRACT_VERSION: ${{ inputs.contract_version }}\n", ""),
+    },
+    {
+      name: "publish operation input is no longer bound",
+      apply: (value) => mutateFirst(value, "          REQUESTED_MODE: ${{ inputs.mode }}\n", ""),
     },
     {
       name: "verify no longer assigns the contract input before its case",
@@ -805,8 +948,48 @@ void test("consumer release policy rejects mutations of every guarded write inva
       apply: (value) => mutateFirst(value, "            release_flags+=(--prerelease)\n", ""),
     },
     {
-      name: "v2 and v3 candidate-only guard is removed",
-      apply: (value) => mutateFirst(value, '          if [[ "$contract_version" =~ ^v[23]$ ]] && [ "$operation" != "manual" ]; then\n', ""),
+      name: "v2 promotion is added to the closed publication matrix",
+      apply: (value) => mutateFirst(
+        value,
+        "            manual_candidate:v1|manual_candidate:v2|manual_candidate:v3|manual_promotion:v3|automatic:v1)",
+        "            manual_candidate:v1|manual_candidate:v2|manual_candidate:v3|manual_promotion:v2|manual_promotion:v3|automatic:v1)",
+      ),
+    },
+    {
+      name: "v3 promotion request guard is removed",
+      apply: (value) => mutateFirst(value, '                test "$REQUESTED_CONTRACT_VERSION" = "v3"\n', ""),
+    },
+    {
+      name: "post-promotion verification is removed",
+      apply: (value) => mutateFirst(
+        value,
+        '            verify_consumer_release "$work_root/after-promotion.json" "$work_root/after-promotion-assets" "$work_root/after-promotion-assets.json"\n',
+        "",
+      ),
+    },
+    {
+      name: "release prerelease boolean validation is removed",
+      apply: (value) => mutateFirst(
+        value,
+        '          if (typeof release.prerelease !== "boolean") process.exit(4);\n',
+        "",
+      ),
+    },
+    {
+      name: "candidate-state precondition is removed",
+      apply: (value) => mutateFirst(
+        value,
+        '            test "$existing_prerelease" = "true"\n',
+        "",
+      ),
+    },
+    {
+      name: "manual promotion is allowed to create a missing release",
+      apply: (value) => mutateFirst(
+        value,
+        '          if [ "$operation" = "manual_promotion" ]; then\n            echo "verified v3 candidate required" >&2\n            exit 4\n          fi\n\n',
+        "",
+      ),
     },
     {
       name: "release flags are cleared before creation",

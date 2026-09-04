@@ -8,9 +8,9 @@ on:
         type: string
         required: true
       mode:
-        description: Verify only or publish an immutable candidate
+        description: Verify, publish an immutable candidate, or promote the exact verified v3 candidate
         type: choice
-        options: [verify, publish-prerelease]
+        options: [verify, publish-prerelease, promote-stable]
         default: verify
         required: true
       contract_version:
@@ -227,7 +227,7 @@ jobs:
     if: >-
       ${{ github.event.repository.visibility == 'public' &&
           ((github.event_name == 'workflow_dispatch' &&
-            inputs.mode == 'publish-prerelease' &&
+            (inputs.mode == 'publish-prerelease' || inputs.mode == 'promote-stable') &&
             github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
            (github.event_name == 'workflow_run' &&
             github.event.workflow_run.conclusion == 'success' &&
@@ -258,6 +258,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_MODE: ${{ inputs.mode }}
           REQUESTED_SOURCE_TAG: ${{ inputs.source_release_tag }}
           REQUESTED_CONTRACT_VERSION: ${{ inputs.contract_version }}
           MANUAL_CODE_SHA: ${{ github.sha }}
@@ -273,10 +274,22 @@ jobs:
           test ! -e "$bundle_dir"
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            operation="manual"
             source_tag="$REQUESTED_SOURCE_TAG"
             code_sha="$MANUAL_CODE_SHA"
             contract_version="$REQUESTED_CONTRACT_VERSION"
+            case "$REQUESTED_MODE" in
+              publish-prerelease)
+                operation="manual_candidate"
+                ;;
+              promote-stable)
+                test "$REQUESTED_CONTRACT_VERSION" = "v3"
+                operation="manual_promotion"
+                ;;
+              *)
+                echo "unsupported manual consumer operation" >&2
+                exit 4
+                ;;
+            esac
           else
             operation="automatic"
             code_sha="$AUTOMATIC_CODE_SHA"
@@ -307,10 +320,14 @@ jobs:
               exit 4
               ;;
           esac
-          if [[ "$contract_version" =~ ^v[23]$ ]] && [ "$operation" != "manual" ]; then
-            echo "consumer v2 and v3 are candidate-only" >&2
-            exit 4
-          fi
+          case "$operation:$contract_version" in
+            manual_candidate:v1|manual_candidate:v2|manual_candidate:v3|manual_promotion:v3|automatic:v1)
+              ;;
+            *)
+              echo "unsupported consumer publication operation" >&2
+              exit 4
+              ;;
+          esac
 
           if [ "$operation" = "automatic" ]; then
             gh api --paginate --slurp "/repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$work_root/releases.json"
@@ -425,6 +442,7 @@ jobs:
           const [releasePath, expectedTag, outputPath, payloadName, checksumName] = process.argv.slice(2);
           const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
           const expectedNames = ["consumer-index.json", payloadName, checksumName];
+          if (typeof release.prerelease !== "boolean") process.exit(4);
           if (release.draft !== false || release.tag_name !== expectedTag || release.name !== expectedTag || release.assets.length !== 3) process.exit(4);
           if (expectedNames.some((name) => release.assets.filter((asset) => asset.name === name).length !== 1)) process.exit(4);
           const assets = Object.fromEntries(expectedNames.map((name) => {
@@ -490,12 +508,26 @@ jobs:
               echo "existing stable release: no_change"
               exit 0
             fi
-            if [ "$operation" = "manual" ]; then
+            if [ "$operation" = "manual_candidate" ]; then
               echo "existing candidate in manual mode: no_change"
               exit 0
             fi
+            test "$existing_prerelease" = "true"
 
-            test "$contract_version" = "v1"
+            case "$operation:$contract_version" in
+              automatic:v1|manual_promotion:v3)
+                ;;
+              *)
+                echo "unsupported stable promotion" >&2
+                exit 4
+                ;;
+            esac
+            if [ "$operation" = "manual_promotion" ]; then
+              test "$contract_version" = "v3"
+            else
+              test "$operation" = "automatic"
+              test "$contract_version" = "v1"
+            fi
             candidate_id="$(node -e 'const value=require(process.argv[1]); process.stdout.write(String(value.id))' "$work_root/existing-assets.json")"
             cp "$existing_json" "$work_root/before-promotion.json"
             gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$candidate_id" \
@@ -511,13 +543,19 @@ jobs:
           const identity = (asset) => ({ id: asset.id, name: asset.name, size: asset.size, digest: asset.digest });
           assert.deepEqual(after.assets.map(identity), before.assets.map(identity));
           NODE
+            verify_consumer_release "$work_root/after-promotion.json" "$work_root/after-promotion-assets" "$work_root/after-promotion-assets.json"
             echo "promoted verified candidate: $consumer_tag"
             exit 0
           fi
 
+          if [ "$operation" = "manual_promotion" ]; then
+            echo "verified v3 candidate required" >&2
+            exit 4
+          fi
+
           release_flags=()
           expected_prerelease="false"
-          if [ "$operation" = "manual" ]; then
+          if [ "$operation" = "manual_candidate" ]; then
             release_flags+=(--prerelease)
             expected_prerelease="true"
           fi
