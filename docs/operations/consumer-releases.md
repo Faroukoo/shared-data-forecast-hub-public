@@ -9,9 +9,9 @@ Une release `consumer-v1-*`, `consumer-v2-*` ou `consumer-v3-*` est une projecti
 - `consumer-v2.json` et `consumer-v2.json.sha256` pour v2 ;
 - `consumer-v3.json` et `consumer-v3.json.sha256` pour v3.
 
-Une release ne mélange jamais les noms v1, v2 et v3. Le contrat v1 reste le défaut du CLI et la seule famille publiée ou promue automatiquement. Les contrats v2 et v3 sont limités aux vérifications et aux candidates manuelles tant qu'une porte de promotion stable séparée n'a pas été conçue, revue et explicitement autorisée.
+Une release ne mélange jamais les noms v1, v2 et v3. Le contrat v1 reste le défaut du CLI et la seule famille publiée ou promue automatiquement. Le contrat v2 reste limité aux vérifications et aux candidates manuelles. Le contrat v3 peut aussi promouvoir manuellement une candidate exacte après test ERP épinglé, revue et autorisation explicite ; il n'est jamais publié ou promu automatiquement.
 
-Le chemin v3 fournit uniquement la capacité de produire un contexte macro national HCP sur vingt-quatre mois, avec Casablanca comme contexte d'exploitation et les achats ERP comme seule autorité de localisation d'approvisionnement. Son contrat IPC base 100 exige une valeur décimale strictement positive et au plus égale à `1000`, sans conversion en nombre binaire. Ce plan ne lance aucun workflow, ne crée aucune candidate, ne promeut aucune release et n'active rien en production.
+Le chemin v3 fournit un contexte macro national HCP sur vingt-quatre mois, avec Casablanca comme contexte d'exploitation et les achats ERP comme seule autorité de localisation d'approvisionnement. Son contrat IPC base 100 exige une valeur décimale strictement positive et au plus égale à `1000`, sans conversion en nombre binaire. La promotion stable et l'activation ERP restent deux opérations externes séparées, chacune traçable et explicitement autorisée.
 
 Le workflow ne consomme jamais `latest`, un brouillon ou une prérelease `data-*`. Il restaure les trois assets source dans le répertoire temporaire du runner, vérifie l'état complet, reconstruit la projection puis vérifie le bundle avant toute décision de publication. Le mode `verify` n'a qu'un jeton `contents: read` et n'écrit aucune release.
 
@@ -112,6 +112,23 @@ Ce test épinglé n'active pas v3 en production et n'autorise pas une promotion 
 
 ## Politique de promotion stable
 
+### Promotion manuelle v3
+
+Une candidate v3 ne peut devenir stable qu'après vérification de ses trois assets, test ERP épinglé concluant, revue du workflow de promotion et autorisation explicite. Le mode manuel reconstruit le bundle depuis la release source stable exacte, recalcule le tag consommateur déterministe, retélécharge et vérifie la candidate, puis change uniquement son indicateur `prerelease` de `true` à `false`. Il refuse v1, v2, une candidate absente, un digest différent, une provenance différente ou tout asset inattendu. Après le PATCH, il retélécharge et vérifie à nouveau les trois assets.
+
+```bash
+source_tag=data-20260827T095123Z-9d3b77bbfc0c
+gh workflow run consumer-release.yml \
+  --ref main \
+  -f source_release_tag="$source_tag" \
+  -f contract_version=v3 \
+  -f mode=promote-stable
+```
+
+Ce mode n'utilise pas `DATA_HUB_CONSUMER_PRODUCTION_ENABLED`, ne crée aucune release si la candidate exacte manque et ne modifie ni tag, ni titre, ni notes, ni target, ni asset. Une stable v3 exacte déjà présente retourne `existing stable release: no_change` après vérification. Sa publication n'active pas à elle seule ERP-Snack : la configuration et le déploiement ERP restent une opération séparée.
+
+### Publication automatique v1
+
 Le second portail d'autorisation existant concerne uniquement la production automatique v1. Ne définir la variable suivante qu'après autorisation explicite de production, revue d'une candidate v1 et preuve d'intégrité :
 
 ```bash
@@ -122,7 +139,7 @@ La publication automatique reste inerte tant que la variable ne vaut pas exactem
 
 Si une candidate v1 exacte existe, le workflow la retélécharge, vérifie ses trois digests, exécute `consumer verify`, exige les notes déterministes exactes et vérifie que `consumer-index.json.code_sha` est égal au `target_commitish` de la release avant de basculer uniquement `prerelease` de `true` à `false`. Il ne modifie ni tag, ni titre, ni notes, ni target, ni asset, ni payload. Sans candidate et sans stable v1 exacte, il crée directement une release v1 stable immuable à partir du bundle vérifié. Une release `data-*` n'est jamais éditée.
 
-La promotion stable v2 ou v3 est une évolution future séparée. Elle devra disposer de son propre plan, de tests ERP épinglés concluants, d'une revue et d'une autorisation explicite ; le workflow actuel ne promeut et ne crée automatiquement aucune stable v2 ou v3.
+La promotion stable v2 reste une évolution future séparée. Elle devra disposer de son propre plan, de tests ERP épinglés concluants, d'une revue et d'une autorisation explicite. Le workflow ne promeut et ne crée automatiquement aucune stable v2 ou v3.
 
 Pour rendre les publications automatiques inertes après autorisation d'intervention externe :
 
