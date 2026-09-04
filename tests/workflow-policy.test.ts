@@ -351,14 +351,34 @@ function assertHardenedConsumerReleasePolicy(
     .filter((line) => line === 'test "$contract_version" = "v3"');
   assert.equal(v1GuardLines.length, 1, "one automatic v1 guard in existing release block");
   assert.equal(v3GuardLines.length, 1, "one manual v3 guard in existing release block");
+  const candidateStateLines = existingReleaseBlock.lines
+    .map((line) => line.trim())
+    .filter((line) => line === 'test "$existing_prerelease" = "true"');
+  assert.equal(candidateStateLines.length, 1, "one strict candidate-state precondition");
   const v1GuardIndex = existingReleaseBlock.lines.findIndex(
     (line) => line.trim() === 'test "$contract_version" = "v1"',
   );
   const v3GuardIndex = existingReleaseBlock.lines.findIndex(
     (line) => line.trim() === 'test "$contract_version" = "v3"',
   );
+  const candidateStateIndex = existingReleaseBlock.lines.findIndex(
+    (line) => line.trim() === 'test "$existing_prerelease" = "true"',
+  );
   assert.ok(existingReleaseBlock.start + v1GuardIndex < patchIndex, "v1 guard before PATCH");
   assert.ok(existingReleaseBlock.start + v3GuardIndex < patchIndex, "v3 guard before PATCH");
+  assert.ok(
+    existingReleaseBlock.start + candidateStateIndex < patchIndex,
+    "candidate-state precondition before PATCH",
+  );
+  assert.equal(
+    publishLines.filter(
+      (line) =>
+        line.trim() ===
+        'if (typeof release.prerelease !== "boolean") process.exit(4);',
+    ).length,
+    1,
+    "release prerelease metadata must be boolean",
+  );
   assert.ok(
     existingReleaseBlock.lines.some(
       (line) =>
@@ -620,6 +640,10 @@ void test("manual stable promotion is v3-only, candidate-required and re-verifie
   assert.match(
     publishRun,
     /test "\$contract_version" = "v3"[\s\S]*gh api --method PATCH/,
+  );
+  assert.match(
+    publishRun,
+    /typeof release\.prerelease !== "boolean"[\s\S]*test "\$existing_prerelease" = "true"[\s\S]*gh api --method PATCH/,
   );
   assert.doesNotMatch(publishRun, /gh release edit/);
 });
@@ -940,6 +964,22 @@ void test("consumer release policy rejects mutations of every guarded write inva
       apply: (value) => mutateFirst(
         value,
         '            verify_consumer_release "$work_root/after-promotion.json" "$work_root/after-promotion-assets" "$work_root/after-promotion-assets.json"\n',
+        "",
+      ),
+    },
+    {
+      name: "release prerelease boolean validation is removed",
+      apply: (value) => mutateFirst(
+        value,
+        '          if (typeof release.prerelease !== "boolean") process.exit(4);\n',
+        "",
+      ),
+    },
+    {
+      name: "candidate-state precondition is removed",
+      apply: (value) => mutateFirst(
+        value,
+        '            test "$existing_prerelease" = "true"\n',
         "",
       ),
     },

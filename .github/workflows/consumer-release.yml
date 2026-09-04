@@ -442,6 +442,7 @@ jobs:
           const [releasePath, expectedTag, outputPath, payloadName, checksumName] = process.argv.slice(2);
           const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
           const expectedNames = ["consumer-index.json", payloadName, checksumName];
+          if (typeof release.prerelease !== "boolean") process.exit(4);
           if (release.draft !== false || release.tag_name !== expectedTag || release.name !== expectedTag || release.assets.length !== 3) process.exit(4);
           if (expectedNames.some((name) => release.assets.filter((asset) => asset.name === name).length !== 1)) process.exit(4);
           const assets = Object.fromEntries(expectedNames.map((name) => {
@@ -511,6 +512,7 @@ jobs:
               echo "existing candidate in manual mode: no_change"
               exit 0
             fi
+            test "$existing_prerelease" = "true"
 
             case "$operation:$contract_version" in
               automatic:v1|manual_promotion:v3)
